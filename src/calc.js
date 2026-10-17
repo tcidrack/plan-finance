@@ -1,3 +1,5 @@
+import { monthAdd } from './plan.js'
+
 export const brl = (n) =>
   Number(n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -12,10 +14,7 @@ export const monthShort = (m) => {
   const [y, mo] = m.split('-')
   return `${NAMES[Number(mo) - 1].slice(0, 3)}/${y.slice(2)}`
 }
-export const nextMonth = (m) => {
-  const [y, mo] = m.split('-').map(Number)
-  return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`
-}
+export const nextMonth = (m) => monthAdd(m, 1)
 export const fmtDay = (date) => date.split('-').reverse().slice(0, 2).join('/')
 
 const signed = (t) => (t.type === 'income' ? 1 : -1) * Number(t.amount)
