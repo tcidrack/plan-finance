@@ -562,10 +562,10 @@ function Main({ session }) {
             <button className="icon danger" onClick={askDeleteMonth} title="Excluir mês" aria-label="Excluir mês"><Trash2 size={16} /></button>
           </div>
           <section className="cards hero">
-            <Stat hero label="Saldo no fim do mês (previsto)" value={sum.projected} tone={sum.projected >= 0 ? 'pos' : 'neg'} strong
-              sub="Saldo que veio + resultado do mês" />
             <Stat hero label="Resultado do mês" value={sum.result} tone={sum.result >= 0 ? 'pos' : 'neg'}
               sub="Receitas − despesas deste mês" />
+            <Stat hero label="Saldo no fim do mês (previsto)" value={sum.projected} tone={sum.projected >= 0 ? 'pos' : 'neg'} strong
+              sub="Saldo que veio + resultado do mês" />
           </section>
           <section className="cards compact">
             <Stat label="Saldo que veio" value={sum.carry} />
