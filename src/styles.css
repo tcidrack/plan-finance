@@ -1,9 +1,21 @@
+/* Tema: segue o sistema (automático) ou o escolhido pelo usuário em data-theme (src/theme.js).
+   color-scheme faz o navegador pintar os controles nativos (calendário, selects, rolagem) no tema certo. */
 :root {
   --bg: #f4f6fb; --card: #fff; --txt: #1d2433; --muted: #7a8396; --line: #e6e9f0;
-  --primary: #6d28d9; --pos: #15803d; --neg: #dc2626;
+  --primary: #6d28d9; --pos: #15803d; --neg: #dc2626; --soon7: #a16207; --soon3: #c2410c;
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #11131a; --card: #1b1e29; --txt: #e8eaf2; --muted: #8e97ad; --line: #2a2f3e; --pos: #4ade80; --neg: #f87171; --primary: #a78bfa;
+  --soon7: #facc15; --soon3: #fb923c;
+  color-scheme: dark;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #11131a; --card: #1b1e29; --txt: #e8eaf2; --muted: #8e97ad; --line: #2a2f3e; --pos: #4ade80; --neg: #f87171; --primary: #a78bfa; }
+  :root:not([data-theme="light"]) {
+    --bg: #11131a; --card: #1b1e29; --txt: #e8eaf2; --muted: #8e97ad; --line: #2a2f3e; --pos: #4ade80; --neg: #f87171; --primary: #a78bfa;
+    --soon7: #facc15; --soon3: #fb923c;
+    color-scheme: dark;
+  }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--txt); font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
@@ -46,6 +58,20 @@ select.tab-limit { width: auto; flex: 0 0 auto; padding: 7px 8px; font-size: .82
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
 .stat { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; }
 .stat.strong { border-color: var(--primary); }
+/* Destaques (saldo previsto e resultado) e linha compacta com o resto */
+.cards.hero { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.stat.hero { padding: 16px 18px; gap: 4px; }
+.stat.hero .lbl { font-size: .85rem; font-weight: 600; color: var(--txt); }
+.stat.hero .val { font-size: 1.9rem; letter-spacing: -.01em; }
+.stat.hero.strong { background: color-mix(in srgb, var(--primary) 7%, var(--card)); border-width: 1.5px; }
+.cards.compact { margin-top: 10px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.cards.compact .stat { padding: 9px 12px; border-radius: 12px; }
+.cards.compact .val { font-size: 1.02rem; }
+.cards.compact .sub { font-size: .7rem; }
+@media (max-width: 600px) {
+  .stat.hero .val { font-size: 1.6rem; }
+  .cards.compact { grid-template-columns: 1fr 1fr; }
+}
 .lbl { font-size: .78rem; color: var(--muted); }
 .val { font-size: 1.25rem; font-weight: 700; }
 .sub { font-size: .75rem; color: var(--muted); }
@@ -61,6 +87,26 @@ tr.done td:not(:first-child):not(.actions) { opacity: .5; text-decoration: line-
 .muted { color: var(--muted); }
 .actions { white-space: nowrap; }
 input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--primary); }
+td { vertical-align: middle; }
+
+/* ───────── Botão de marcar pago/recebido ───────── */
+.check-btn { --c: var(--primary); width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; padding: 0; cursor: pointer;
+  border: 2px solid var(--line); background: transparent; color: transparent; transition: background .15s, border-color .15s, color .15s, transform .15s; }
+.check-btn.inc { --c: var(--pos); }
+.check-btn:hover { border-color: var(--c); color: color-mix(in srgb, var(--c) 45%, transparent); }
+.check-btn.on { background: var(--pos); border-color: var(--pos); color: #fff; animation: check-pop .25s ease-out; }
+.check-btn.on:hover { filter: brightness(1.08); color: #fff; }
+.check-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.check-btn:active { transform: scale(.9); }
+@keyframes check-pop { 0% { transform: scale(.7); } 60% { transform: scale(1.12); } 100% { transform: scale(1); } }
+
+/* ───────── Data colorida pelo vencimento ───────── */
+.due { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.due.soon7, .due.soon3, .due.late { padding: 1px 7px; border-radius: 999px; font-weight: 600; font-size: .82rem; }
+.due.soon7 { background: color-mix(in srgb, #eab308 18%, transparent); color: var(--soon7); }
+.due.soon3 { background: color-mix(in srgb, #f97316 18%, transparent); color: var(--soon3); }
+.due.late { background: color-mix(in srgb, var(--neg) 16%, transparent); color: var(--neg); }
+.meta-m { display: none; }
 .btn { border: 1px solid var(--line); background: var(--card); color: var(--txt); border-radius: 10px; padding: 8px 14px; cursor: pointer; font-size: .9rem; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
 .btn.sm { padding: 5px 10px; }
@@ -71,7 +117,29 @@ input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--primary); 
 .brand svg { color: var(--primary); }
 .tab.add { display: inline-flex; align-items: center; }
 .link { background: none; border: none; color: var(--primary); cursor: pointer; text-decoration: underline; }
-.hdr-actions { display: flex; gap: 8px; }
+.hdr-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn.icon-only { padding: 8px 10px; }
+.center { position: relative; }
+.corner { position: absolute; top: 16px; right: 16px; }
+.pw-field { position: relative; display: block; }
+.pw-field input { padding-right: 42px; }
+.pw-toggle { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); display: grid; place-items: center; width: 34px; height: 34px;
+  border: none; background: none; color: var(--muted); cursor: pointer; border-radius: 8px; }
+.pw-toggle:hover { color: var(--txt); background: var(--line); }
+.pw-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+
+/* ───────── Configurações ───────── */
+.settings section { display: flex; flex-direction: column; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); }
+.settings section:first-of-type { border-top: none; padding-top: 0; }
+.settings .segmented { align-self: flex-start; }
+.settings .segmented button { display: inline-flex; align-items: center; gap: 6px; }
+.settings form.row.wrap .btn { height: 41px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.opt-chip { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 999px; font-size: .8rem;
+  background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+.opt-chip.mine { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 40%, var(--line)); background: color-mix(in srgb, var(--primary) 8%, var(--card)); font-weight: 600; }
+.opt-chip button { display: grid; place-items: center; border: none; background: none; color: inherit; cursor: pointer; padding: 0; opacity: .7; }
+.opt-chip button:hover { opacity: 1; color: var(--neg); }
 .error, .msg { background: #fee2e2; color: #991b1b; padding: 8px 12px; border-radius: 10px; margin: 8px 0; }
 label { display: flex; flex-direction: column; gap: 4px; font-size: .82rem; color: var(--muted); flex: 1; }
 label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--txt); }
@@ -220,4 +288,26 @@ label.inline { flex: 0 1 180px; }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, 12px); } }
 @keyframes shrink { to { transform: scaleX(0); } }
 
-@media (max-width: 560px) { th:nth-child(4), td:nth-child(4), th:nth-child(5), td:nth-child(5) { display: none; } }
+/* ───────── Celular: cada lançamento vira um cartão ───────── */
+@media (max-width: 600px) {
+  .card { padding: 14px 12px; }
+  .tablewrap { overflow: visible; }
+  table, tbody, tfoot { display: block; width: 100%; }
+  thead, .c-day, .c-cat, .c-met { display: none; }
+  tbody tr { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto; grid-template-areas: "chk desc val" "chk desc act";
+    column-gap: 10px; row-gap: 2px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  tbody td { padding: 0; border: none; }
+  .c-chk { grid-area: chk; align-self: start; padding-top: 2px; }
+  .c-desc { grid-area: desc; min-width: 0; overflow-wrap: anywhere; }
+  .c-val { grid-area: val; font-weight: 700; }
+  .actions { grid-area: act; justify-self: end; display: flex; gap: 0; }
+  .actions .icon { padding: 5px; }
+  .actions .icon svg { width: 15px; height: 15px; }
+  .meta-m { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin-top: 3px; font-size: .75rem; color: var(--muted); }
+  .meta-m .due.soon7, .meta-m .due.soon3, .meta-m .due.late { font-size: .72rem; }
+  tr.empty-row { display: block; }
+  tr.empty-row td { display: block; padding: 10px 0; }
+  .total-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0 0; }
+  .total-row td { padding: 0; border: none; }
+  .total-row .total-pad { display: none; }
+}

@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState, useCallback } from 'react'
-import { Wallet, Pencil, Trash2, Plus, Copy, Repeat, Search, Wand2, CalendarClock } from 'lucide-react'
+import { Wallet, Pencil, Trash2, Plus, Copy, Repeat, Search, Wand2, Check, AlertCircle, Settings, Sun, Moon, Monitor, X, Eye, EyeOff } from 'lucide-react'
+import { THEMES, useTheme } from './theme.js'
 import { supabase, configured } from './supabase.js'
 import { CATEGORIES, METHODS } from './constants.js'
 import { brl, monthOf, monthLabel, monthShort, nextMonth, fmtDay, summarize } from './calc.js'
 import {
   buildInstallments, stripInstallmentSuffix, installmentDescription, splitCents, recurrenceMonths, recurrenceRow,
-  missingRecurring, monthAdd, dueSoon, planConversion, looseToInstallments, looseToRecurring, fixedFromRow, resizeInstallments, round2,
+  missingRecurring, monthAdd, dueSoon, dueLevel, planConversion, looseToInstallments, looseToRecurring, fixedFromRow, resizeInstallments, round2,
 } from './plan.js'
 import { ConfirmDialog, Toast, MonthPicker, FixosPanel, ConvertModal, MakeFixedDialog, useEsc } from './dialogs.jsx'
 import { MonthTabs } from './tabs.jsx'
@@ -67,28 +68,64 @@ function Auth() {
   return <Main session={session} />
 }
 
+// Último e-mail usado neste navegador (a senha fica a cargo do gerenciador de senhas do navegador).
+const EMAIL_KEY = 'pf.lastEmail'
+const readEmail = () => { try { return localStorage.getItem(EMAIL_KEY) || '' } catch { return '' } }
+const AUTH_ERRORS = [
+  [/invalid login credentials/i, 'E-mail ou senha incorretos.'],
+  [/already registered|already exists/i, 'Este e-mail já tem conta. Use "Já tenho conta" para entrar.'],
+  [/email not confirmed/i, 'Confirme seu e-mail antes de entrar (veja sua caixa de entrada).'],
+  [/password should be at least/i, 'A senha precisa ter pelo menos 6 caracteres.'],
+  [/rate limit|too many/i, 'Muitas tentativas. Aguarde um pouco e tente de novo.'],
+]
+const authMessage = (m) => AUTH_ERRORS.find(([re]) => re.test(m))?.[1] || m
+
 function Login() {
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(readEmail)
   const [password, setPassword] = useState('')
+  const [remember, setRemember] = useState(true)
+  const [showPw, setShowPw] = useState(false)
   const [mode, setMode] = useState('login')
+  const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
 
   const submit = async (e) => {
     e.preventDefault()
     setMsg('')
+    setBusy(true)
     const fn = mode === 'login' ? supabase.auth.signInWithPassword : supabase.auth.signUp
     const { error, data } = await fn.call(supabase.auth, { email, password })
-    if (error) setMsg(error.message)
-    else if (mode === 'signup' && !data.session) setMsg('Conta criada. Confirme o e-mail (se o Supabase pedir) e entre.')
+    setBusy(false)
+    if (error) return setMsg(authMessage(error.message))
+    try { remember ? localStorage.setItem(EMAIL_KEY, email.trim()) : localStorage.removeItem(EMAIL_KEY) } catch { /* sem armazenamento */ }
+    if (mode === 'signup' && !data.session) setMsg('Conta criada. Confirme o e-mail (se o Supabase pedir) e entre.')
   }
 
   return (
     <div className="center">
-      <form className="card narrow" onSubmit={submit}>
+      <div className="corner"><ThemeButton /></div>
+      {/* name/autocomplete fazem o navegador reconhecer o login e oferecer para salvar a senha */}
+      <form className="card narrow" method="post" autoComplete="on" onSubmit={submit}>
         <h1 className="brand"><Wallet size={22} /> Controle de Finanças</h1>
-        <label>E-mail<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
-        <label>Senha<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required /></label>
-        <button className="btn primary" type="submit">{mode === 'login' ? 'Entrar' : 'Criar conta'}</button>
+        <label htmlFor="email">E-mail
+          <input id="email" name="email" type="email" inputMode="email" autoComplete="username"
+            value={email} onChange={(e) => setEmail(e.target.value)} required />
+        </label>
+        <label htmlFor="password">Senha
+          <span className="pw-field">
+            <input id="password" name="password" type={showPw ? 'text' : 'password'}
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              value={password} onChange={(e) => setPassword(e.target.value)} minLength={6} required />
+            <button type="button" className="pw-toggle" onClick={() => setShowPw(!showPw)}
+              aria-label={showPw ? 'Ocultar senha' : 'Mostrar senha'} aria-pressed={showPw} title={showPw ? 'Ocultar senha' : 'Mostrar senha'}>
+              {showPw ? <EyeOff size={18} /> : <Eye size={18} />}
+            </button>
+          </span>
+        </label>
+        <label className="check"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} /> Lembrar meu e-mail</label>
+        <button className="btn primary" type="submit" disabled={busy}>
+          {busy ? (mode === 'login' ? 'Entrando…' : 'Criando…') : mode === 'login' ? 'Entrar' : 'Criar conta'}
+        </button>
         <button type="button" className="link" onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}>
           {mode === 'login' ? 'Primeira vez? Criar conta' : 'Já tenho conta'}
         </button>
@@ -119,15 +156,18 @@ function Main({ session }) {
   const [toast, setToast] = useState(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [options, setOptions] = useState([]) // categorias e formas criadas pelo usuário
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
-    const [t, s, r, m] = await Promise.all([
+    const [t, s, r, m, o] = await Promise.all([
       supabase.from('transactions').select('*').order('date', { ascending: true }).order('created_at', { ascending: true }),
       supabase.from('settings').select('*').maybeSingle(),
       supabase.from('recurrences').select('*').order('created_at', { ascending: true }),
       supabase.from('months').select('month'),
+      supabase.from('user_options').select('*').order('name', { ascending: true }),
     ])
+    setOptions(o.error ? null : o.data) // null = migração 004 ainda não rodou
     if (t.error) setError(t.error.message)
     else setRows(t.data.map((x) => ({ ...x, amount: Number(x.amount) })))
     if (s.data) { setSettings(s.data); setHasSettings(true) }
@@ -249,7 +289,7 @@ function Main({ session }) {
     const orig = rows.find((x) => x.id === f.id)
     const baseDesc = orig.group_id ? stripInstallmentSuffix(orig.description) : orig.description
     const sharedChanged = payload.description !== baseDesc || payload.amount !== orig.amount ||
-      payload.category !== orig.category || payload.method !== (orig.method || '')
+      payload.category !== orig.category || payload.method !== (orig.method || '') || payload.notes !== (orig.notes || '')
 
     // Novo nº de parcelas (só em parcelamentos).
     const newTotal = orig.group_id ? parseInt(f.newTotal, 10) : null
@@ -272,7 +312,7 @@ function Main({ session }) {
     setDialog({
       tone: 'info', icon: Pencil, title: 'Aplicar a alteração em…',
       body: <>
-        <p>Este lançamento faz parte de {orig.group_id ? `um parcelamento em ${orig.installment_total}x` : 'um gasto fixo'}. Valor, descrição, categoria e forma podem valer para as outras também.</p>
+        <p>Este lançamento faz parte de {orig.group_id ? `um parcelamento em ${orig.installment_total}x` : 'um gasto fixo'}. Valor, descrição, categoria, forma e observação podem valer para as outras também.</p>
         {resizeNote && <p><b>{resizeNote}</b></p>}
       </>,
       actions: [
@@ -287,8 +327,8 @@ function Main({ session }) {
     const descFor = (x) => (x.group_id ? installmentDescription(payload.description, x.installment_number, x.installment_total) : payload.description)
     const edited = new Map(scoped(orig, scope).map((x) => [x.id, {
       ...x,
-      category: payload.category, method: payload.method, amount: payload.amount, description: descFor(x),
-      ...(x.id === orig.id ? { date: payload.date, status: payload.status, notes: payload.notes, type: payload.type } : {}),
+      category: payload.category, method: payload.method, amount: payload.amount, notes: payload.notes, description: descFor(x),
+      ...(x.id === orig.id ? { date: payload.date, status: payload.status, type: payload.type } : {}),
     }]))
     let list = [...edited.values()]
 
@@ -306,7 +346,7 @@ function Main({ session }) {
     if (list.length) await q(supabase.from('transactions').upsert(list))
     if (orig.recurrence_id && scope !== 'one') {
       await q(supabase.from('recurrences').update({
-        description: payload.description, amount: payload.amount, category: payload.category, method: payload.method,
+        description: payload.description, amount: payload.amount, category: payload.category, method: payload.method, notes: payload.notes,
       }).eq('id', orig.recurrence_id))
     }
     await saveMonths([monthOf(payload.date)])
@@ -339,14 +379,22 @@ function Main({ session }) {
     category: r.category, type: r.type, amount: r.amount, status: 'pending', method: r.method, notes: r.notes,
   })
 
-  const saveSettings = async (s) => {
-    await exec(() => q(supabase.from('settings').upsert({
-      user_id: uid,
-      opening_balance: parseAmount(s.opening_balance),
-      opening_date: s.opening_date,
-    })))
-    setShowSettings(false)
+  const saveSettings = (s) => exec(() => q(supabase.from('settings').upsert({
+    user_id: uid,
+    opening_balance: parseAmount(s.opening_balance),
+    opening_date: s.opening_date,
+  })))
+
+  // Categorias e formas de pagamento: as padrão + as criadas pelo usuário.
+  const custom = (kind) => (options || []).filter((x) => x.kind === kind)
+  const categories = [...CATEGORIES, ...custom('category').map((x) => x.name)]
+  const methods = [...METHODS, ...custom('method').map((x) => x.name)]
+  const addOption = (kind, name) => {
+    const list = kind === 'category' ? categories : methods
+    if (list.some((x) => norm(x) === norm(name))) return setError(`"${name}" já existe na lista.`)
+    return exec(() => q(supabase.from('user_options').insert({ kind, name })))
   }
+  const removeOption = (opt) => exec(() => q(supabase.from('user_options').delete().eq('id', opt.id)))
 
   // ───────── Meses ─────────
   const ensureMonth = (m) => {
@@ -462,7 +510,6 @@ function Main({ session }) {
   if (loading) return <div className="center">Carregando…</div>
 
   const sum = month ? summarize(rows, settings, month) : null
-  const due = dueSoon(rows, today())
   const nq = norm(search.trim())
   const visible = (r) =>
     (statusFilter === 'all' || r.status === statusFilter) &&
@@ -477,7 +524,8 @@ function Main({ session }) {
         <h1 className="brand"><Wallet size={22} /> Controle de Finanças</h1>
         <div className="hdr-actions">
           <button className="btn" onClick={() => setShowFixos(true)} disabled={needsMigration}><Repeat size={16} /> Fixos</button>
-          <button className="btn" onClick={() => setShowSettings(true)}>Saldo inicial</button>
+          <button className="btn" onClick={() => setShowSettings(true)}><Settings size={16} /> Configurações</button>
+          <ThemeButton />
           <button className="btn" onClick={() => supabase.auth.signOut()}>Sair</button>
         </div>
       </header>
@@ -513,16 +561,17 @@ function Main({ session }) {
             <h2>{monthLabel(month)}</h2>
             <button className="icon danger" onClick={askDeleteMonth} title="Excluir mês" aria-label="Excluir mês"><Trash2 size={16} /></button>
           </div>
-          <section className="cards">
+          <section className="cards hero">
+            <Stat hero label="Saldo no fim do mês (previsto)" value={sum.projected} tone={sum.projected >= 0 ? 'pos' : 'neg'} strong
+              sub="Saldo que veio + resultado do mês" />
+            <Stat hero label="Resultado do mês" value={sum.result} tone={sum.result >= 0 ? 'pos' : 'neg'}
+              sub="Receitas − despesas deste mês" />
+          </section>
+          <section className="cards compact">
             <Stat label="Saldo que veio" value={sum.carry} />
             <Stat label="Receitas" value={sum.income} tone="pos" sub={`Recebido ${brl(sum.receivedIncome)}`} />
             <Stat label="Despesas" value={sum.expense} tone="neg" sub={`Pago ${brl(sum.paidExpense)} · Falta ${brl(sum.pendingExpense)}`} />
-            <Stat label="Resultado do mês" value={sum.result} tone={sum.result >= 0 ? 'pos' : 'neg'} />
-            <Stat label="Saldo no fim do mês (previsto)" value={sum.projected} tone={sum.projected >= 0 ? 'pos' : 'neg'} strong />
-            <Stat label="Saldo real hoje (só pagos)" value={sum.current} />
-            <Stat icon={CalendarClock} label="Vence nos próximos 7 dias" value={due.total} tone={due.count ? 'neg' : ''}
-              sub={due.count ? `${plural(due.count, 'conta', 'contas')}: ${due.list.slice(0, 3).map((t) => `${t.description} (${fmtDay(t.date)})`).join(', ')}${due.count > 3 ? '…' : ''}` : 'Nada vencendo'}
-              onClick={due.count ? () => { setStatusFilter('pending'); if (months.includes(curMonth)) setMonth(curMonth) } : undefined} />
+            <Stat label="Saldo real hoje" value={sum.current} sub="Só o que já foi pago/recebido" />
           </section>
 
           <div className="toolbar">
@@ -544,10 +593,13 @@ function Main({ session }) {
         </>
       )}
 
-      {editing && <Modal init={editing} canRepeat={!needsMigration} onSave={save} onClose={() => setEditing(null)}
+      {editing && <Modal init={editing} canRepeat={!needsMigration} categories={categories} methods={methods} onSave={save} onClose={() => setEditing(null)}
         onMakeFixed={() => { setFixing(rows.find((r) => r.id === editing.id)); setEditing(null) }} />}
       {fixing && <MakeFixedDialog row={fixing} rows={rows} onConfirm={(until) => makeFixed(fixing, until)} onClose={() => setFixing(null)} />}
-      {showSettings && <SettingsModal init={settings} onSave={saveSettings} onClose={() => setShowSettings(false)} exists={hasSettings} />}
+      {showSettings && (
+        <SettingsPanel settings={settings} onSaveBalance={saveSettings} options={options}
+          onAddOption={addOption} onRemoveOption={removeOption} onClose={() => setShowSettings(false)} />
+      )}
       {picker && <MonthPicker initial={nextMonth(months[months.length - 1] || curMonth)} onPick={ensureMonth} onClose={() => setPicker(false)} />}
       {showFixos && <FixosPanel recs={recs} rows={rows} today={today()} onSaveAmount={saveRecAmount} onEnd={askEndRec}
         onConvert={() => setShowConvert(true)} onClose={() => setShowFixos(false)} />}
@@ -569,9 +621,9 @@ const blank = (month, type) => ({
   status: 'pending', method: type === 'income' ? '' : 'Pix', notes: '',
 })
 
-function Stat({ label, value, tone, sub, strong, icon: Icon, onClick }) {
+function Stat({ label, value, tone, sub, strong, hero, icon: Icon, onClick }) {
   return (
-    <div className={`stat ${strong ? 'strong' : ''} ${onClick ? 'clickable' : ''}`} onClick={onClick}
+    <div className={`stat ${strong ? 'strong' : ''} ${hero ? 'hero' : ''} ${onClick ? 'clickable' : ''}`} onClick={onClick}
       role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (e) => e.key === 'Enter' && onClick() : undefined}>
       <span className="lbl">{Icon && <Icon size={13} />}{label}</span>
@@ -584,6 +636,7 @@ function Stat({ label, value, tone, sub, strong, icon: Icon, onClick }) {
 function Table({ title, rows, onToggle, onEdit, onDelete, onDuplicate, onMakeFixed, onAdd }) {
   const total = rows.reduce((s, r) => s + r.amount, 0)
   const isInc = title === 'Receitas'
+  const todayStr = today()
   return (
     <section className="card">
       <div className="card-head">
@@ -596,21 +649,36 @@ function Table({ title, rows, onToggle, onEdit, onDelete, onDuplicate, onMakeFix
             <tr><th></th><th>Dia</th><th>Descrição</th><th>Categoria</th><th>Forma</th><th className="r">Valor</th><th></th></tr>
           </thead>
           <tbody>
-            {rows.length === 0 && <tr><td colSpan="7" className="muted">Nada lançado.</td></tr>}
-            {rows.map((r) => (
-              <tr key={r.id} className={r.status === 'paid' ? 'done' : ''}>
-                <td><input type="checkbox" checked={r.status === 'paid'} onChange={() => onToggle(r)}
-                  title={r.status === 'paid' ? 'Marcar como pendente' : isInc ? 'Marcar como recebido' : 'Marcar como pago'} /></td>
-                <td>{fmtDay(r.date)}</td>
-                <td>
-                  {r.group_id ? stripInstallmentSuffix(r.description) : r.description}
-                  {r.group_id && <span className="badge" title="Parcela">{r.installment_number}/{r.installment_total}</span>}
-                  {r.recurrence_id && <span className="badge fix" title="Gasto fixo"><Repeat size={11} /> Fixo</span>}
-                  {r.notes && <div className="note">{r.notes}</div>}
-                </td>
-                <td>{r.category}</td>
-                <td>{r.method}</td>
-                <td className={`r ${isInc ? 'pos' : 'neg'}`}>{brl(r.amount)}</td>
+            {rows.length === 0 && <tr className="empty-row"><td colSpan="7" className="muted">Nada lançado.</td></tr>}
+            {rows.map((r) => {
+              const paid = r.status === 'paid'
+              const label = paid ? 'Marcar como pendente' : isInc ? 'Marcar como recebido' : 'Marcar como pago'
+              // Só despesas pendentes ganham a cor de vencimento.
+              const due = !isInc && !paid ? dueLevel(r.date, todayStr) : null
+              const day = (
+                <span className={`due${due ? ` ${due.level}` : ''}`} title={due?.label}>
+                  {due?.level === 'late' && <AlertCircle size={11} />}{fmtDay(r.date)}
+                </span>
+              )
+              return (
+                <tr key={r.id} className={paid ? 'done' : ''}>
+                  <td className="c-chk">
+                    <button className={`check-btn${paid ? ' on' : ''}${isInc ? ' inc' : ''}`} onClick={() => onToggle(r)}
+                      aria-pressed={paid} title={label} aria-label={`${label}: ${r.description}`}>
+                      <Check size={15} strokeWidth={3} />
+                    </button>
+                  </td>
+                  <td className="c-day">{day}</td>
+                  <td className="c-desc">
+                    <span className="desc-text">{r.group_id ? stripInstallmentSuffix(r.description) : r.description}</span>
+                    {r.group_id && <span className="badge" title="Parcela">{r.installment_number}/{r.installment_total}</span>}
+                    {r.recurrence_id && <span className="badge fix" title="Gasto fixo"><Repeat size={11} /> Fixo</span>}
+                    <div className="meta-m">{day}{[r.category, r.method].filter(Boolean).map((t) => <span key={t}> · {t}</span>)}</div>
+                    {r.notes && <div className="note">{r.notes}</div>}
+                  </td>
+                  <td className="c-cat">{r.category}</td>
+                  <td className="c-met">{r.method}</td>
+                  <td className={`c-val r ${isInc ? 'pos' : 'neg'}`}>{brl(r.amount)}</td>
                 <td className="actions">
                   {onMakeFixed && !r.group_id && !r.recurrence_id && (
                     <button className="icon" onClick={() => onMakeFixed(r)} title="Tornar fixo (repetir todo mês)" aria-label="Tornar fixo"><Repeat size={16} /></button>
@@ -620,16 +688,20 @@ function Table({ title, rows, onToggle, onEdit, onDelete, onDuplicate, onMakeFix
                   <button className="icon danger" onClick={() => onDelete(r)} title="Excluir" aria-label="Excluir"><Trash2 size={16} /></button>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
-          <tfoot><tr><td colSpan="5">Total</td><td className="r"><b>{brl(total)}</b></td><td></td></tr></tfoot>
+          <tfoot><tr className="total-row"><td colSpan="5">Total</td><td className="r"><b>{brl(total)}</b></td><td className="total-pad"></td></tr></tfoot>
         </table>
       </div>
     </section>
   )
 }
 
-function Modal({ init, canRepeat, onSave, onClose, onMakeFixed }) {
+// Mantém no select o valor atual do lançamento, mesmo que tenha saído da lista.
+const withCurrent = (list, value) => (value && !list.includes(value) ? [value, ...list] : list)
+
+function Modal({ init, canRepeat, categories, methods, onSave, onClose, onMakeFixed }) {
   useEsc(onClose)
   const [f, setF] = useState({
     n: '1', amountMode: 'total', repeat: false, until: '',
@@ -664,10 +736,10 @@ function Modal({ init, canRepeat, onSave, onClose, onMakeFixed }) {
         </div>
         <div className="row">
           <label>Categoria
-            <select value={f.category} onChange={set('category')}>{CATEGORIES.map((c) => <option key={c}>{c}</option>)}</select>
+            <select value={f.category} onChange={set('category')}>{withCurrent(categories, f.category).map((c) => <option key={c}>{c}</option>)}</select>
           </label>
           <label>Forma
-            <select value={f.method || ''} onChange={set('method')}><option value=""></option>{METHODS.map((c) => <option key={c}>{c}</option>)}</select>
+            <select value={f.method || ''} onChange={set('method')}><option value=""></option>{withCurrent(methods, f.method).map((c) => <option key={c}>{c}</option>)}</select>
           </label>
         </div>
         <label>Observação<input value={f.notes || ''} onChange={set('notes')} /></label>
@@ -734,21 +806,101 @@ function Modal({ init, canRepeat, onSave, onClose, onMakeFixed }) {
   )
 }
 
-function SettingsModal({ init, onSave, onClose }) {
+const THEME_ICONS = { auto: Monitor, light: Sun, dark: Moon }
+
+// Alterna Automático → Claro → Escuro.
+function ThemeButton() {
+  const [theme, setTheme] = useTheme()
+  const order = THEMES.map(([v]) => v)
+  const next = order[(order.indexOf(theme) + 1) % order.length]
+  const Icon = THEME_ICONS[theme]
+  const name = (v) => THEMES.find(([k]) => k === v)[1]
+  return (
+    <button className="btn icon-only" onClick={() => setTheme(next)}
+      title={`Tema: ${name(theme)} (clique para ${name(next).toLowerCase()})`} aria-label={`Tema ${name(theme)}`}>
+      <Icon size={16} />
+    </button>
+  )
+}
+
+function SettingsPanel({ settings, onSaveBalance, options, onAddOption, onRemoveOption, onClose }) {
   useEsc(onClose)
-  const [s, setS] = useState({ opening_balance: String(init.opening_balance).replace('.', ','), opening_date: init.opening_date })
+  const [theme, setTheme] = useTheme()
+  const [s, setS] = useState({ opening_balance: String(settings.opening_balance).replace('.', ','), opening_date: settings.opening_date })
+  const [saved, setSaved] = useState(false)
+  const saveBalance = async (e) => {
+    e.preventDefault()
+    await onSaveBalance(s)
+    setSaved(true)
+  }
+
   return (
     <div className="overlay" onClick={onClose}>
-      <form className="card modal" onClick={(e) => e.stopPropagation()} onSubmit={(e) => { e.preventDefault(); onSave(s) }}>
-        <h3>Saldo inicial</h3>
-        <p className="muted">Quanto você tinha na conta nessa data. Só lançamentos a partir dela entram no saldo.</p>
-        <label>Saldo (R$)<input inputMode="decimal" value={s.opening_balance} onChange={(e) => setS({ ...s, opening_balance: e.target.value })} /></label>
-        <label>Data<input type="date" value={s.opening_date} onChange={(e) => setS({ ...s, opening_date: e.target.value })} required /></label>
-        <div className="row end">
-          <button type="button" className="btn" onClick={onClose}>Cancelar</button>
-          <button className="btn primary">Salvar</button>
+      <div className="card modal wide settings" onClick={(e) => e.stopPropagation()}>
+        <div className="card-head">
+          <h3 className="brand"><Settings size={18} /> Configurações</h3>
+          <button className="icon" onClick={onClose} aria-label="Fechar"><X size={18} /></button>
         </div>
-      </form>
+
+        <section>
+          <h4>Saldo inicial</h4>
+          <p className="hint">Quanto você tinha na conta nessa data. Só lançamentos a partir dela entram no saldo.</p>
+          <form className="row wrap" onSubmit={saveBalance}>
+            <label>Saldo (R$)<input inputMode="decimal" value={s.opening_balance} onChange={(e) => { setSaved(false); setS({ ...s, opening_balance: e.target.value }) }} /></label>
+            <label>Data<input type="date" value={s.opening_date} onChange={(e) => { setSaved(false); setS({ ...s, opening_date: e.target.value }) }} required /></label>
+            <button className="btn primary">{saved ? <><Check size={16} /> Salvo</> : 'Salvar'}</button>
+          </form>
+        </section>
+
+        <section>
+          <h4>Tema</h4>
+          <div className="segmented" role="group" aria-label="Tema">
+            {THEMES.map(([v, l]) => {
+              const Icon = THEME_ICONS[v]
+              return <button key={v} className={theme === v ? 'on' : ''} onClick={() => setTheme(v)}><Icon size={14} /> {l}</button>
+            })}
+          </div>
+        </section>
+
+        <OptionList title="Categorias" kind="category" defaults={CATEGORIES} options={options} onAdd={onAddOption} onRemove={onRemoveOption} />
+        <OptionList title="Formas de pagamento" kind="method" defaults={METHODS} options={options} onAdd={onAddOption} onRemove={onRemoveOption} />
+      </div>
     </div>
+  )
+}
+
+// Lista padrão (fixa) + itens do usuário (removíveis) + campo para adicionar.
+function OptionList({ title, kind, defaults, options, onAdd, onRemove }) {
+  const [name, setName] = useState('')
+  const mine = (options || []).filter((x) => x.kind === kind)
+  const add = async (e) => {
+    e.preventDefault()
+    const v = name.trim().replace(/\s+/g, ' ')
+    if (!v) return
+    await onAdd(kind, v)
+    setName('')
+  }
+  return (
+    <section>
+      <h4>{title}</h4>
+      {options === null ? (
+        <p className="hint">Para criar as suas, rode <code>supabase/migration-004.sql</code> no SQL Editor do Supabase.</p>
+      ) : (
+        <>
+          <div className="chips">
+            {mine.map((o) => (
+              <span key={o.id} className="opt-chip mine">{o.name}
+                <button onClick={() => onRemove(o)} aria-label={`Remover ${o.name}`} title="Remover (lançamentos que já usam continuam com o nome)"><X size={12} /></button>
+              </span>
+            ))}
+            {defaults.map((d) => <span key={d} className="opt-chip">{d}</span>)}
+          </div>
+          <form className="row" onSubmit={add}>
+            <input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} placeholder={kind === 'category' ? 'Nova categoria (ex.: Pets)' : 'Nova forma (ex.: Cartão Inter)'} aria-label={`Nova ${kind === 'category' ? 'categoria' : 'forma de pagamento'}`} />
+            <button className="btn" disabled={!name.trim()}><Plus size={16} /> Adicionar</button>
+          </form>
+        </>
+      )}
+    </section>
   )
 }

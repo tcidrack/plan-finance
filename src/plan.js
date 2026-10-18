@@ -123,6 +123,15 @@ export function missingRecurring(recs, rows, month) {
 }
 
 // ───────── Vencimentos ─────────
+// Quão perto está de vencer: 'late' (hoje ou atrasado), 'soon3' (1–3 dias), 'soon7' (4–7 dias) ou null.
+export function dueLevel(date, today) {
+  const days = Math.round((Date.parse(date) - Date.parse(today)) / 864e5)
+  if (days > 7) return null
+  if (days < 0) return { level: 'late', days, label: `Atrasado há ${-days} dia${days === -1 ? '' : 's'}` }
+  if (days === 0) return { level: 'late', days, label: 'Vence hoje' }
+  return { level: days <= 3 ? 'soon3' : 'soon7', days, label: `Vence em ${days} dia${days === 1 ? '' : 's'}` }
+}
+
 export function dueSoon(rows, today, days = 7) {
   const until = addDays(today, days)
   const list = rows.filter((t) => t.type === 'expense' && t.status === 'pending' && t.method !== 'Vale iFood' && t.date >= today && t.date <= until)

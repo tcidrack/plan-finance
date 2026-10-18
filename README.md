@@ -4,7 +4,7 @@ React + Vite + Supabase, para publicar na Vercel. Abas por mês, marcar como pag
 
 ## 1. Supabase
 1. Crie um projeto em https://supabase.com.
-2. **SQL Editor → New query**: cole `supabase/schema.sql` e clique em **Run**; depois faça o mesmo com `supabase/migration-003.sql` (Planejador).
+2. **SQL Editor → New query**: cole `supabase/schema.sql` e clique em **Run**; depois faça o mesmo com `supabase/migration-003.sql` (Planejador) e `supabase/migration-004.sql` (categorias e formas personalizadas).
 3. **Project Settings → API**: copie a `Project URL` e a chave `anon public`.
 4. (Opcional, mais simples) **Authentication → Providers → Email**: desligue "Confirm email" para entrar logo após criar a conta.
 
@@ -12,6 +12,7 @@ React + Vite + Supabase, para publicar na Vercel. Abas por mês, marcar como pag
 Rode no **SQL Editor**, nesta ordem, as migrações que ainda não rodou (todas podem rodar mais de uma vez sem problema):
 1. `supabase/migration-002.sql`: parcelas, gastos fixos e meses salvos.
 2. `supabase/migration-003.sql`: Planejador (histórico, objetivos e limite diário).
+3. `supabase/migration-004.sql`: categorias e formas de pagamento personalizadas.
 
 Depois faça o deploy da versão nova (push no GitHub; a Vercel publica sozinha). Enquanto uma migração não roda, o app continua funcionando e mostra um aviso.
 

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   splitCents, addMonths, monthAdd, monthRange, buildInstallments, parseInstallment, stripInstallmentSuffix,
   missingRecurring, recurrenceMonths, dueSoon, planConversion, looseToInstallments, looseToRecurring,
-  fixedFromRow, visibleMonths, resizeInstallments,
+  fixedFromRow, visibleMonths, resizeInstallments, dueLevel,
 } from './plan.js'
 import { linkInstallments } from './plan.js'
 import { SAMPLE } from './fixtures.test-data.js'
@@ -151,6 +151,24 @@ describe('abas visíveis', () => {
   })
   it('"Todos" não esconde nada', () => {
     expect(visibleMonths(months, '2026-10', null, '2026-10')).toEqual({ shown: months, hidden: 0 })
+  })
+})
+
+describe('cor do vencimento', () => {
+  const lvl = (date) => dueLevel(date, '2026-10-30')?.level ?? null
+  it('classifica pela distância até a data', () => {
+    expect(lvl('2026-10-28')).toBe('late')
+    expect(lvl('2026-10-30')).toBe('late')
+    expect(lvl('2026-10-31')).toBe('soon3')
+    expect(lvl('2026-11-02')).toBe('soon3') // 3 dias, virando o mês
+    expect(lvl('2026-11-03')).toBe('soon7')
+    expect(lvl('2026-11-06')).toBe('soon7')
+    expect(lvl('2026-11-07')).toBeNull()
+  })
+  it('gera o texto do aviso', () => {
+    expect(dueLevel('2026-10-30', '2026-10-30').label).toBe('Vence hoje')
+    expect(dueLevel('2026-10-28', '2026-10-30').label).toBe('Atrasado há 2 dias')
+    expect(dueLevel('2026-10-31', '2026-10-30').label).toBe('Vence em 1 dia')
   })
 })
 
