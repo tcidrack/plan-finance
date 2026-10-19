@@ -10,7 +10,7 @@ import { GoogleGenAI } from '@google/genai'
 import { createClient } from '@supabase/supabase-js'
 import { buildPlannerContext } from '../src/planner-context.js'
 
-const DAILY_LIMIT = 10
+const DAILY_LIMIT = 5
 const HISTORY_SIZE = 20
 const MAX_MESSAGE = 2000
 // Modelos tentados em ordem: se um estiver sem cota, sobrecarregado ou indisponível, vai para o próximo.
