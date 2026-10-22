@@ -134,8 +134,43 @@ export function dueLevel(date, today) {
 
 export function dueSoon(rows, today, days = 7) {
   const until = addDays(today, days)
-  const list = rows.filter((t) => t.type === 'expense' && t.status === 'pending' && t.method !== 'Vale iFood' && t.date >= today && t.date <= until)
+  const list = rows.filter((t) => t.type === 'expense' && t.status === 'pending' && !t.planned && t.method !== 'Vale iFood' && t.date >= today && t.date <= until)
   return { list, count: list.length, total: round2(list.reduce((s, t) => s + Number(t.amount), 0)) }
+}
+
+// ───────── Cartões e planejados ─────────
+// Vencimento da fatura em que cai uma compra feita hoje.
+export function openBillDue(card, today) {
+  const closeMonth = Number(today.slice(8, 10)) < card.closing_day ? monthOfDate(today) : monthAdd(monthOfDate(today), 1)
+  const dueMonth = card.due_day <= card.closing_day ? monthAdd(closeMonth, 1) : closeMonth
+  return dateInMonth(dueMonth, card.due_day)
+}
+
+// Acrescenta `planned` (efetivo), `planned_auto` (o que o app decidiu) e `planned_set`
+// (escolha do usuário: true/false, ou null = o app decide). Lançamentos no cartão cuja
+// 1ª linha do grupo vence depois da fatura aberta ainda não aconteceram → planejados.
+export function withPlanned(rows, cards = [], today) {
+  const card = new Map(cards.map((c) => [c.method, c]))
+  const groupKey = (r) => r.group_id || r.recurrence_id
+  const groups = new Map()
+  for (const r of rows) {
+    const k = groupKey(r)
+    if (!k) continue
+    const g = groups.get(k) || { first: r.date, paid: false }
+    if (r.date < g.first) g.first = r.date
+    if (r.status === 'paid') g.paid = true
+    groups.set(k, g)
+  }
+  return rows.map((r) => {
+    const c = card.get(r.method)
+    let auto = false
+    if (c && r.type === 'expense' && r.status === 'pending') {
+      const g = groups.get(groupKey(r)) || { first: r.date, paid: false }
+      auto = !g.paid && monthOfDate(g.first) > monthOfDate(openBillDue(c, today))
+    }
+    const set = r.planned ?? null
+    return { ...r, planned: set ?? auto, planned_auto: auto, planned_set: set }
+  })
 }
 
 // ───────── Conversão de parcelas lançadas à mão ─────────
@@ -255,15 +290,68 @@ function recurringFrom(rows, template, endMonth, recId) {
 export const looseToRecurring = (loose, endMonth, recId) =>
   recurringFrom(loose.rows, loose.rows[loose.rows.length - 1], endMonth, recId)
 
+// Lançamentos soltos iguais (mesma descrição e tipo, sem vínculo) dos meses seguintes, por data.
+export function sameLater(row, rows) {
+  const month = monthOfDate(row.date)
+  const key = norm(row.description)
+  return rows
+    .filter((r) => r.id !== row.id && !r.group_id && !r.recurrence_id && r.type === row.type &&
+      norm(r.description) === key && monthOfDate(r.date) > month)
+    .sort(byDate)
+}
+
+// ───────── Repetir uma edição nos outros meses ─────────
+// O que se repete com `row`: as outras parcelas, os outros meses do fixo ou, se for solto,
+// os iguais (mesma descrição e tipo, sem vínculo) de outros meses.
+export function repeatSet(row, rows) {
+  const others = rows.filter((r) => r.id !== row.id)
+  if (row.group_id) return others.filter((r) => r.group_id === row.group_id)
+  if (row.recurrence_id) return others.filter((r) => r.recurrence_id === row.recurrence_id)
+  const key = norm(row.description)
+  const month = monthOfDate(row.date)
+  return others
+    .filter((r) => !r.group_id && !r.recurrence_id && r.type === row.type && norm(r.description) === key && monthOfDate(r.date) !== month)
+    .sort(byDate)
+}
+
+// Campos que o usuário mudou e que podem ir para os outros meses: [{ field, from, to }].
+// Data mudando só de mês não conta; tipo e status nunca são levados.
+export function editChanges(orig, payload) {
+  const out = []
+  const add = (field, from, to) => { if (from !== to) out.push({ field, from, to }) }
+  add('description', orig.group_id ? stripInstallmentSuffix(orig.description) : orig.description, payload.description)
+  add('amount', Number(orig.amount), Number(payload.amount))
+  add('category', orig.category, payload.category)
+  add('method', orig.method || '', payload.method || '')
+  add('notes', orig.notes || '', payload.notes || '')
+  if ('planned' in payload) add('planned', orig.planned ?? null, payload.planned ?? null)
+  add('day', Number(orig.date.slice(8, 10)), Number(payload.date.slice(8, 10)))
+  return out
+}
+
+// A linha editada recebe tudo; as outras (`targets`) só os campos que mudaram.
+// O dia fica no mês de cada uma; o valor só vai para as que tinham o valor antigo.
+export function applyRepeat(orig, payload, changes, targets) {
+  const descFor = (x) => (x.group_id ? installmentDescription(payload.description, x.installment_number, x.installment_total) : payload.description)
+  const day = Number(payload.date.slice(8, 10))
+  const edited = { ...orig, ...payload, description: descFor(orig) }
+  const patch = (x) => {
+    const p = {}
+    for (const { field } of changes) {
+      if (field === 'description') p.description = descFor(x)
+      else if (field === 'day') p.date = dateInMonth(monthOfDate(x.date), day)
+      else if (field === 'amount') { if (Number(x.amount) === Number(orig.amount)) p.amount = payload.amount }
+      else p[field] = payload[field]
+    }
+    return { ...x, ...p }
+  }
+  return [edited, ...targets.map(patch)]
+}
+
 // "Tornar fixo" num lançamento existente. Também vincula os lançamentos iguais
 // (mesma descrição, tipo e categoria, sem vínculo) dos meses seguintes, para não duplicar.
 export function fixedFromRow(row, rows, endMonth, recId) {
-  const month = monthOfDate(row.date)
-  const key = norm(row.description)
-  const same = rows
-    .filter((r) => r.id !== row.id && !r.group_id && !r.recurrence_id && r.type === row.type && r.category === row.category &&
-      norm(r.description) === key && monthOfDate(r.date) > month)
-    .sort(byDate)
+  const same = sameLater(row, rows).filter((r) => r.category === row.category)
   const res = recurringFrom([row, ...same], row, endMonth, recId)
   return { ...res, linked: res.updates.map((u) => u.row).filter((r) => r.id !== row.id) }
 }

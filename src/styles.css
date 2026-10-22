@@ -174,6 +174,24 @@ pre { background: var(--bg); padding: 10px; border-radius: 8px; overflow-x: auto
 .badge { display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: .72rem; font-weight: 600;
   background: color-mix(in srgb, var(--primary) 14%, transparent); color: var(--primary); text-decoration: none; vertical-align: middle; }
 .badge.fix { background: color-mix(in srgb, var(--pos) 14%, transparent); color: var(--pos); }
+.badge.plan { background: transparent; color: var(--muted); border: 1px dashed currentColor; padding: 0 6px; }
+.badge.plan.set { border-style: solid; }
+
+/* Botões on/off "Fixo" e "Planejado" nas linhas da tabela */
+.chips-row { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: middle; flex-wrap: wrap; }
+.chip-toggle { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; min-height: 22px; border-radius: 999px;
+  font: inherit; font-size: .72rem; font-weight: 600; line-height: 1; cursor: pointer;
+  background: transparent; color: var(--muted); border: 1px solid color-mix(in srgb, var(--muted) 35%, transparent); opacity: .65; }
+.chip-toggle:hover, .chip-toggle:focus-visible { opacity: 1; }
+.chip-toggle.on { opacity: 1; }
+.chip-toggle.fix.on { background: color-mix(in srgb, var(--pos) 14%, transparent); color: var(--pos); border-color: color-mix(in srgb, var(--pos) 40%, transparent); }
+.chip-toggle.plan.on { background: color-mix(in srgb, var(--primary) 10%, transparent); color: var(--primary); border-color: currentColor; }
+.chip-toggle.plan.on.auto { border-style: dashed; }
+@media (pointer: coarse) { .chip-toggle { min-height: 28px; padding: 4px 10px; } }
+.cards-cfg { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 10px; }
+.cards-cfg .row { align-items: flex-end; }
+.cards-cfg .cc-name { flex: 1 1 100%; }
+.cards-cfg label.inline { flex: 0 1 120px; }
 .hint { font-size: .78rem; color: var(--muted); margin: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .hint .badge { margin-left: 0; }
 .hint.neg { color: var(--neg); }

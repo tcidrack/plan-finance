@@ -89,3 +89,24 @@ create policy "recurrences_own" on public.recurrences
 drop policy if exists "months_own" on public.months;
 create policy "months_own" on public.months
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- ═════════ Lançamentos planejados e cartões (mesmo conteúdo de migration-005/006.sql) ═════════
+-- planned: null = o app decide; true/false = escolha do usuário.
+alter table public.transactions add column if not exists planned boolean;
+alter table public.transactions alter column planned drop not null;
+alter table public.transactions alter column planned drop default;
+
+create table if not exists public.cards (
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  method text not null, -- nome da forma de pagamento, ex.: "Cartão Nubank"
+  closing_day int not null check (closing_day between 1 and 31),
+  due_day int not null check (due_day between 1 and 31),
+  credit_limit numeric(12,2) check (credit_limit >= 0),
+  primary key (user_id, method)
+);
+
+alter table public.cards enable row level security;
+
+drop policy if exists "cards_own" on public.cards;
+create policy "cards_own" on public.cards
+  for all using (auth.uid() = user_id) with check (auth.uid() = user_id);

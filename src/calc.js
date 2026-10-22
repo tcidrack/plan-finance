@@ -35,6 +35,8 @@ export function summarize(allRows, settings, month) {
   const paidExpense = sum(inMonth, (t) => t.type === 'expense' && t.status === 'paid')
   const pendingExpense = expense - paidExpense
   const receivedIncome = sum(inMonth, (t) => t.type === 'income' && t.status === 'paid')
+  // Despesas "planejadas": previsões ainda não confirmadas (contam no saldo mesmo assim).
+  const planned = sum(inMonth, (t) => t.type === 'expense' && t.planned)
 
   const upTo = counted.filter((t) => monthOf(t.date) <= month)
   const projected = ob + upTo.reduce((s, t) => s + signed(t), 0)
@@ -43,5 +45,5 @@ export function summarize(allRows, settings, month) {
   const before = counted.filter((t) => monthOf(t.date) < month)
   const carry = ob + before.reduce((s, t) => s + signed(t), 0)
 
-  return { income, expense, paidExpense, pendingExpense, receivedIncome, projected, current, carry, result: income - expense }
+  return { income, expense, paidExpense, pendingExpense, receivedIncome, planned, projected, current, carry, result: income - expense }
 }

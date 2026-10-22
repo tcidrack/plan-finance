@@ -5,8 +5,8 @@ import { supabase, configured } from './supabase.js'
 import { CATEGORIES, METHODS } from './constants.js'
 import { brl, monthOf, monthLabel, monthShort, nextMonth, fmtDay, summarize } from './calc.js'
 import {
-  buildInstallments, stripInstallmentSuffix, installmentDescription, splitCents, recurrenceMonths, recurrenceRow,
-  missingRecurring, monthAdd, dueSoon, dueLevel, planConversion, looseToInstallments, looseToRecurring, fixedFromRow, resizeInstallments, round2,
+  buildInstallments, stripInstallmentSuffix, splitCents, recurrenceMonths, recurrenceRow,
+  missingRecurring, monthAdd, dueSoon, openBillDue, withPlanned, repeatSet, editChanges, applyRepeat, dueLevel, planConversion, looseToInstallments, looseToRecurring, fixedFromRow, resizeInstallments, round2,
 } from './plan.js'
 import { ConfirmDialog, Toast, MonthPicker, FixosPanel, ConvertModal, MakeFixedDialog, useEsc } from './dialogs.jsx'
 import { MonthTabs } from './tabs.jsx'
@@ -22,6 +22,19 @@ const parseAmount = (v) => {
 }
 const norm = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 const UNDO_MS = 8000
+
+// Rótulo de uma mudança no popup "Repetir esta edição…": "Forma: Boleto → Cartão Nubank".
+const PLAN_LABEL = { null: 'automático', true: 'planejado', false: 'gasto certo' }
+const changeLabel = ({ field, from, to }, orig, others) => {
+  const show = (v) => (v === '' ? '(vazio)' : v)
+  if (field === 'amount') {
+    const skip = others.filter((x) => Number(x.amount) !== Number(orig.amount)).length
+    return `Valor: ${brl(from)} → ${brl(to)}${skip ? ` (só nos meses que estavam com ${brl(from)}; ${skip} com outro valor ficam como estão)` : ''}`
+  }
+  if (field === 'planned') return `Planejamento: ${PLAN_LABEL[from]} → ${PLAN_LABEL[to]}`
+  const name = { description: 'Descrição', category: 'Categoria', method: 'Forma', notes: 'Observação', day: 'Dia' }[field]
+  return `${name}: ${show(from)} → ${show(to)}`
+}
 // Preferências do navegador separadas por conta.
 const monthKey = (uid) => `pf.month:${uid}`
 const readMonth = (uid) => {
@@ -34,6 +47,7 @@ const readMonth = (uid) => {
 // Erro do Supabase vira exceção, para as operações em várias etapas.
 const q = async (p) => {
   const { data, error } = await p
+  if (error && /planned|cards/.test(error.message || '')) throw new Error('Rode supabase/migration-005.sql e depois migration-006.sql no Supabase para ativar planejados e cartões.')
   if (error) throw error
   return data
 }
@@ -138,6 +152,7 @@ function Login() {
 function Main({ session }) {
   const uid = session.user.id
   const [rows, setRows] = useState([])
+  const [cards, setCards] = useState([]) // null = migração 006 ainda não rodou
   const [recs, setRecs] = useState([])
   const [savedMonths, setSavedMonths] = useState([])
   const [extraMonths, setExtraMonths] = useState([]) // só usado se a migração 002 ainda não rodou
@@ -160,14 +175,16 @@ function Main({ session }) {
   const [error, setError] = useState('')
 
   const load = useCallback(async () => {
-    const [t, s, r, m, o] = await Promise.all([
+    const [t, s, r, m, o, c] = await Promise.all([
       supabase.from('transactions').select('*').order('date', { ascending: true }).order('created_at', { ascending: true }),
       supabase.from('settings').select('*').maybeSingle(),
       supabase.from('recurrences').select('*').order('created_at', { ascending: true }),
       supabase.from('months').select('month'),
       supabase.from('user_options').select('*').order('name', { ascending: true }),
+      supabase.from('cards').select('*'),
     ])
     setOptions(o.error ? null : o.data) // null = migração 004 ainda não rodou
+    setCards(c.error ? null : c.data.map((x) => ({ ...x, credit_limit: x.credit_limit == null ? null : Number(x.credit_limit) })))
     if (t.error) setError(t.error.message)
     else setRows(t.data.map((x) => ({ ...x, amount: Number(x.amount) })))
     if (s.data) { setSettings(s.data); setHasSettings(true) }
@@ -284,12 +301,17 @@ function Main({ session }) {
       type: f.type, amount: round2(parseAmount(f.amount)),
       status: f.status, method: f.method || '', notes: f.notes || '',
     }
-    if (!f.id) return create(f, payload)
+    const orig = f.id ? rows.find((x) => x.id === f.id) : null
+    // "Planejado" só vai para o banco quando o usuário mexeu (null = o app decide).
+    const plannedSet = f.planned_set ?? null
+    if (plannedSet !== (orig?.planned ?? null)) payload.planned = plannedSet
+    if (!orig) return create(f, payload)
 
-    const orig = rows.find((x) => x.id === f.id)
-    const baseDesc = orig.group_id ? stripInstallmentSuffix(orig.description) : orig.description
-    const sharedChanged = payload.description !== baseDesc || payload.amount !== orig.amount ||
-      payload.category !== orig.category || payload.method !== (orig.method || '') || payload.notes !== (orig.notes || '')
+    // Marcou/desmarcou "Repetir todo mês": salva este lançamento e liga ou desliga o fixo.
+    if (!orig.group_id && f.fixed !== undefined && Boolean(f.fixed) !== Boolean(orig.recurrence_id)) {
+      if (f.fixed) return applyEdit(orig, payload, 'one', []).then(() => setFixing({ ...orig, ...payload }))
+      return askStopFixed(orig, payload)
+    }
 
     // Novo nº de parcelas (só em parcelamentos).
     const newTotal = orig.group_id ? parseInt(f.newTotal, 10) : null
@@ -300,40 +322,51 @@ function Main({ session }) {
       ? `Vai passar para ${resize}x e apagar ${plural(removed.length, 'parcela', 'parcelas')} (${removed.map((x) => `${x.installment_number}/${orig.installment_total}`).join(', ')})${removed.some((x) => x.status === 'paid') ? ', incluindo pagas' : ''}.`
       : `Vai passar para ${resize}x e criar as parcelas que faltam.`)
 
-    if (!(orig.group_id || orig.recurrence_id) || !sharedChanged) {
-      if (!removed.length) return applyEdit(orig, payload, 'one', resize)
+    // Tudo que se repete (parcela, fixo ou lançamento igual em outros meses) pergunta se leva a edição.
+    const changes = editChanges(orig, payload)
+    const others = repeatSet(orig, rows)
+    if (!changes.length || !others.length) {
+      if (!removed.length) return applyEdit(orig, payload, 'one', changes, resize)
       return setDialog({
         title: `Reduzir para ${resize} parcelas?`, body: resizeNote,
-        actions: [{ label: 'Reduzir', kind: 'danger', onClick: () => { setDialog(null); applyEdit(orig, payload, 'one', resize) } }],
+        actions: [{ label: 'Reduzir', kind: 'danger', onClick: () => { setDialog(null); applyEdit(orig, payload, 'one', changes, resize) } }],
       })
     }
 
-    const go = (scope) => { setDialog(null); applyEdit(orig, payload, scope, resize) }
+    const next = editTargets(orig, 'next').length
+    const what = orig.group_id ? `um parcelamento em ${orig.installment_total}x`
+      : orig.recurrence_id ? 'um gasto fixo'
+        : `${plural(others.length, 'lançamento igual', 'lançamentos iguais')} ("${orig.description}") em outros meses`
+    const go = (scope) => { setDialog(null); applyEdit(orig, payload, scope, changes, resize) }
     setDialog({
-      tone: 'info', icon: Pencil, title: 'Aplicar a alteração em…',
+      tone: 'info', icon: Pencil, title: 'Repetir esta edição nos outros meses?',
       body: <>
-        <p>Este lançamento faz parte de {orig.group_id ? `um parcelamento em ${orig.installment_total}x` : 'um gasto fixo'}. Valor, descrição, categoria, forma e observação podem valer para as outras também.</p>
+        <p>Este lançamento {orig.group_id || orig.recurrence_id ? 'faz parte de' : 'tem'} {what}. O que mudou:</p>
+        <ul>{changes.map((c) => <li key={c.field}>{changeLabel(c, orig, others)}</li>)}</ul>
+        <p className="muted">Nos outros meses muda só isso; o resto fica como está.</p>
         {resizeNote && <p><b>{resizeNote}</b></p>}
       </>,
       actions: [
         { label: 'Só esta', onClick: () => go('one') },
-        { label: 'Esta e as seguintes', kind: 'primary', onClick: () => go('next') },
-        { label: 'Todas', kind: 'primary', onClick: () => go('all') },
+        ...(next ? [{ label: `Esta e as seguintes (${next + 1})`, kind: 'primary', onClick: () => go('next') }] : []),
+        ...(next < others.length ? [{ label: `Todas (${others.length + 1})`, kind: 'primary', onClick: () => go('all') }] : []),
       ],
     })
   }
 
-  const applyEdit = (orig, payload, scope, resize = null) => exec(async () => {
-    const descFor = (x) => (x.group_id ? installmentDescription(payload.description, x.installment_number, x.installment_total) : payload.description)
-    const edited = new Map(scoped(orig, scope).map((x) => [x.id, {
-      ...x,
-      category: payload.category, method: payload.method, amount: payload.amount, notes: payload.notes, description: descFor(x),
-      ...(x.id === orig.id ? { date: payload.date, status: payload.status, type: payload.type } : {}),
-    }]))
-    let list = [...edited.values()]
+  // Outras linhas que recebem a edição: nenhuma, as seguintes ou todas.
+  const editTargets = (orig, scope) => {
+    if (scope === 'one') return []
+    const pos = (x) => (x.group_id ? x.installment_number : x.recurrence_month || monthOf(x.date))
+    return repeatSet(orig, rows).filter((x) => scope === 'all' || pos(x) > pos(orig))
+  }
+
+  const applyEdit = (orig, payload, scope, changes, resize = null) => exec(async () => {
+    let list = applyRepeat(orig, payload, changes, editTargets(orig, scope))
 
     if (resize) {
       // Renumera o grupo inteiro (já com as alterações), apaga as excedentes e cria as que faltam.
+      const edited = new Map(list.map((x) => [x.id, x]))
       const before = siblings(orig)
       const { keep, removes, inserts } = resizeInstallments(before.map((x) => edited.get(x.id) || x), resize)
       if (removes.length) await q(supabase.from('transactions').delete().in('id', removes.map((x) => x.id)))
@@ -345,9 +378,10 @@ function Main({ session }) {
 
     if (list.length) await q(supabase.from('transactions').upsert(list))
     if (orig.recurrence_id && scope !== 'one') {
-      await q(supabase.from('recurrences').update({
-        description: payload.description, amount: payload.amount, category: payload.category, method: payload.method, notes: payload.notes,
-      }).eq('id', orig.recurrence_id))
+      // A regra do fixo também muda só no que foi alterado (para os meses criados depois no "+").
+      const rule = {}
+      for (const { field, to } of changes) if (field !== 'planned') rule[field] = to
+      if (Object.keys(rule).length) await q(supabase.from('recurrences').update(rule).eq('id', orig.recurrence_id))
     }
     await saveMonths([monthOf(payload.date)])
     setEditing(null)
@@ -365,7 +399,7 @@ function Main({ session }) {
         description: payload.description, category: payload.category, type: payload.type, amount: payload.amount,
         method: payload.method, notes: payload.notes, day: Number(payload.date.slice(8, 10)), start_month: start, end_month: end,
       }).select())
-      const list = recurrenceMonths(start, end).map((m) => recurrenceRow(rec, m))
+      const list = recurrenceMonths(start, end).map((m) => ({ ...recurrenceRow(rec, m), ...('planned' in payload ? { planned: payload.planned } : {}) }))
       list[0] = { ...list[0], date: payload.date, status: payload.status }
       await insertRows(list, 'recurrence_id,recurrence_month')
     } else {
@@ -377,6 +411,7 @@ function Main({ session }) {
   const duplicate = (r) => setEditing({
     date: r.date, description: r.group_id ? stripInstallmentSuffix(r.description) : r.description,
     category: r.category, type: r.type, amount: r.amount, status: 'pending', method: r.method, notes: r.notes,
+    ...(r.planned_set != null ? { planned_set: r.planned_set } : {}),
   })
 
   const saveSettings = (s) => exec(() => q(supabase.from('settings').upsert({
@@ -395,6 +430,13 @@ function Main({ session }) {
     return exec(() => q(supabase.from('user_options').insert({ kind, name })))
   }
   const removeOption = (opt) => exec(() => q(supabase.from('user_options').delete().eq('id', opt.id)))
+
+  // Cartões de crédito: fechamento e vencimento de cada forma de pagamento "Cartão …".
+  const saveCard = (c) => exec(() => q(supabase.from('cards').upsert({
+    user_id: uid, method: c.method, closing_day: Number(c.closing_day), due_day: Number(c.due_day),
+    credit_limit: String(c.credit_limit ?? '').trim() ? round2(parseAmount(c.credit_limit)) : null,
+  }, { onConflict: 'user_id,method' })))
+  const removeCard = (method) => exec(() => q(supabase.from('cards').delete().eq('method', method)))
 
   // ───────── Meses ─────────
   const ensureMonth = (m) => {
@@ -476,6 +518,46 @@ function Main({ session }) {
     })
   }
 
+  // Botões on/off da tabela. Fixo: liga pelo "Tornar fixo" e desliga pelo "Parar de repetir".
+  const toggleFixed = (r) => (r.recurrence_id ? askStopFixed(r) : setFixing(r))
+  // Planejado: passa pelo save(), então o que se repete pergunta se leva para os outros meses.
+  // `r` vem com o planejado efetivo; clicar num automático grava "gasto certo".
+  const togglePlanned = (r) => save({
+    ...r,
+    description: r.group_id ? stripInstallmentSuffix(r.description) : r.description,
+    amount: String(r.amount),
+    newTotal: r.installment_total ? String(r.installment_total) : '',
+    planned_set: !r.planned,
+  })
+
+  // Desmarcou "Repetir todo mês" num fixo: este mês (e os anteriores) ficam; os pendentes seguintes saem.
+  const askStopFixed = (orig, payload = orig) => {
+    const rec = recs.find((x) => x.id === orig.recurrence_id)
+    const later = rows.filter((t) => t.recurrence_id === orig.recurrence_id && t.recurrence_month > orig.recurrence_month)
+    const pending = later.filter((t) => t.status === 'pending')
+    const paid = later.length - pending.length
+    setDialog({
+      tone: 'warn', icon: Repeat, title: `Parar de repetir "${orig.description}"?`,
+      body: <>
+        <p>Este mês fica. Deixa de ser gerado depois de {monthShort(orig.recurrence_month)}
+          {pending.length ? ` e ${plural(pending.length, 'lançamento pendente dos meses seguintes será apagado', 'lançamentos pendentes dos meses seguintes serão apagados')}` : ''}.</p>
+        {paid > 0 && <p className="muted">{plural(paid, 'lançamento já pago fica', 'lançamentos já pagos ficam')}.</p>}
+      </>,
+      actions: [{
+        label: 'Parar de repetir', kind: 'danger', onClick: () => {
+          setDialog(null)
+          exec(async () => {
+            await q(supabase.from('transactions').upsert(applyRepeat(orig, payload, [], [])))
+            if (pending.length) await q(supabase.from('transactions').delete().in('id', pending.map((x) => x.id)))
+            if (rec) await endRecurrence(rec, monthAdd(orig.recurrence_month, 1))
+            offerUndo(`"${orig.description}" não repete mais`, { tx: pending, recs: rec ? [rec] : [] })
+            setEditing(null)
+          })
+        },
+      }],
+    })
+  }
+
   // Lançamento existente → fixo (vincula os iguais dos meses seguintes e gera o resto).
   const makeFixed = (row, until) => exec(async () => {
     const { rec, updates, inserts } = fixedFromRow(row, rows, until, crypto.randomUUID())
@@ -487,6 +569,9 @@ function Main({ session }) {
 
   // ───────── Conversor ─────────
   const conv = useMemo(() => planConversion(rows), [rows])
+  // Lançamentos com o "planejado" efetivo (escolha do usuário ou automático pelo cartão). Só para exibir:
+  // as gravações continuam saindo de `rows`, que tem só as colunas da tabela.
+  const view = useMemo(() => withPlanned(rows, cards || [], today()), [rows, cards])
   const applyConversion = (sel) => exec(async () => {
     const updates = [], groupInserts = [], recInserts = [], newRecs = []
     for (const g of sel.groups) { updates.push(...g.updates); groupInserts.push(...g.inserts) }
@@ -509,12 +594,14 @@ function Main({ session }) {
 
   if (loading) return <div className="center">Carregando…</div>
 
-  const sum = month ? summarize(rows, settings, month) : null
+  const sum = month ? summarize(view, settings, month) : null
   const nq = norm(search.trim())
   const visible = (r) =>
     (statusFilter === 'all' || r.status === statusFilter) &&
     (!nq || norm(`${r.description} ${r.category} ${r.method} ${r.notes}`).includes(nq))
-  const list = rows.filter((r) => monthOf(r.date) === month && visible(r))
+  const list = view.filter((r) => monthOf(r.date) === month && visible(r))
+  // Ações que gravam a linha de volta recebem a versão crua (sem os campos calculados).
+  const raw = (fn) => (r) => fn(rows.find((x) => x.id === r.id))
   const incomes = list.filter((r) => r.type === 'income')
   const expenses = list.filter((r) => r.type === 'expense')
 
@@ -563,7 +650,7 @@ function Main({ session }) {
           </div>
           <section className="cards hero">
             <Stat hero label="Resultado do mês" value={sum.result} tone={sum.result >= 0 ? 'pos' : 'neg'}
-              sub="Receitas − despesas deste mês" />
+              sub={sum.planned > 0 ? `Receitas − despesas · inclui ${brl(sum.planned)} planejado` : 'Receitas − despesas deste mês'} />
             <Stat hero label="Saldo no fim do mês (previsto)" value={sum.projected} tone={sum.projected >= 0 ? 'pos' : 'neg'} strong
               sub="Saldo que veio + resultado do mês" />
           </section>
@@ -586,18 +673,18 @@ function Main({ session }) {
             </div>
           </div>
 
-          <Table title="Receitas" rows={incomes} onToggle={togglePaid} onEdit={setEditing} onDelete={askDelete} onDuplicate={duplicate}
-            onMakeFixed={needsMigration ? null : setFixing} onAdd={() => setEditing(blank(month, 'income'))} />
-          <Table title="Despesas" rows={expenses} onToggle={togglePaid} onEdit={setEditing} onDelete={askDelete} onDuplicate={duplicate}
-            onMakeFixed={needsMigration ? null : setFixing} onAdd={() => setEditing(blank(month, 'expense'))} />
+          <Table title="Receitas" rows={incomes} onToggle={togglePaid} onEdit={setEditing} onDelete={raw(askDelete)} onDuplicate={duplicate}
+            onToggleFixed={needsMigration ? null : raw(toggleFixed)} onTogglePlanned={togglePlanned} onAdd={() => setEditing(blank(month, 'income'))} />
+          <Table title="Despesas" rows={expenses} onToggle={togglePaid} onEdit={setEditing} onDelete={raw(askDelete)} onDuplicate={duplicate}
+            onToggleFixed={needsMigration ? null : raw(toggleFixed)} onTogglePlanned={togglePlanned} onAdd={() => setEditing(blank(month, 'expense'))} />
         </>
       )}
 
-      {editing && <Modal init={editing} canRepeat={!needsMigration} categories={categories} methods={methods} onSave={save} onClose={() => setEditing(null)}
-        onMakeFixed={() => { setFixing(rows.find((r) => r.id === editing.id)); setEditing(null) }} />}
+      {editing && <Modal init={editing} canRepeat={!needsMigration} categories={categories} methods={methods} cards={cards} onSave={save} onClose={() => setEditing(null)} />}
       {fixing && <MakeFixedDialog row={fixing} rows={rows} onConfirm={(until) => makeFixed(fixing, until)} onClose={() => setFixing(null)} />}
       {showSettings && (
         <SettingsPanel settings={settings} onSaveBalance={saveSettings} options={options}
+          methods={methods} cards={cards} onSaveCard={saveCard} onRemoveCard={removeCard}
           onAddOption={addOption} onRemoveOption={removeOption} onClose={() => setShowSettings(false)} />
       )}
       {picker && <MonthPicker initial={nextMonth(months[months.length - 1] || curMonth)} onPick={ensureMonth} onClose={() => setPicker(false)} />}
@@ -633,7 +720,7 @@ function Stat({ label, value, tone, sub, strong, hero, icon: Icon, onClick }) {
   )
 }
 
-function Table({ title, rows, onToggle, onEdit, onDelete, onDuplicate, onMakeFixed, onAdd }) {
+function Table({ title, rows, onToggle, onEdit, onDelete, onDuplicate, onToggleFixed, onTogglePlanned, onAdd }) {
   const total = rows.reduce((s, r) => s + r.amount, 0)
   const isInc = title === 'Receitas'
   const todayStr = today()
@@ -672,7 +759,21 @@ function Table({ title, rows, onToggle, onEdit, onDelete, onDuplicate, onMakeFix
                   <td className="c-desc">
                     <span className="desc-text">{r.group_id ? stripInstallmentSuffix(r.description) : r.description}</span>
                     {r.group_id && <span className="badge" title="Parcela">{r.installment_number}/{r.installment_total}</span>}
-                    {r.recurrence_id && <span className="badge fix" title="Gasto fixo"><Repeat size={11} /> Fixo</span>}
+                    <span className="chips-row">
+                      {onToggleFixed && !r.group_id && (
+                        <button type="button" className={`chip-toggle fix${r.recurrence_id ? ' on' : ''}`} aria-pressed={Boolean(r.recurrence_id)}
+                          onClick={() => onToggleFixed(r)} title={r.recurrence_id ? 'Fixo: repete todo mês (clique para parar)' : 'Não repete (clique para tornar fixo)'}>
+                          <Repeat size={11} /> Fixo
+                        </button>
+                      )}
+                      <button type="button" className={`chip-toggle plan${r.planned ? ' on' : ''}${r.planned && r.planned_set == null ? ' auto' : ''}`}
+                        aria-pressed={Boolean(r.planned)} onClick={() => onTogglePlanned(r)}
+                        title={!r.planned ? 'Confirmado (clique para marcar como só planejamento)'
+                          : r.planned_set == null ? 'Planejado automaticamente: ainda não caiu em nenhuma fatura do cartão (clique para marcar como gasto certo)'
+                            : 'Só planejamento, ainda não confirmado (clique para confirmar)'}>
+                        Planejado
+                      </button>
+                    </span>
                     <div className="meta-m">{day}{[r.category, r.method].filter(Boolean).map((t) => <span key={t}> · {t}</span>)}</div>
                     {r.notes && <div className="note">{r.notes}</div>}
                   </td>
@@ -680,9 +781,6 @@ function Table({ title, rows, onToggle, onEdit, onDelete, onDuplicate, onMakeFix
                   <td className="c-met">{r.method}</td>
                   <td className={`c-val r ${isInc ? 'pos' : 'neg'}`}>{brl(r.amount)}</td>
                 <td className="actions">
-                  {onMakeFixed && !r.group_id && !r.recurrence_id && (
-                    <button className="icon" onClick={() => onMakeFixed(r)} title="Tornar fixo (repetir todo mês)" aria-label="Tornar fixo"><Repeat size={16} /></button>
-                  )}
                   <button className="icon" onClick={() => onDuplicate(r)} title="Duplicar" aria-label="Duplicar"><Copy size={16} /></button>
                   <button className="icon" onClick={() => onEdit(r)} title="Editar" aria-label="Editar"><Pencil size={16} /></button>
                   <button className="icon danger" onClick={() => onDelete(r)} title="Excluir" aria-label="Excluir"><Trash2 size={16} /></button>
@@ -701,11 +799,12 @@ function Table({ title, rows, onToggle, onEdit, onDelete, onDuplicate, onMakeFix
 // Mantém no select o valor atual do lançamento, mesmo que tenha saído da lista.
 const withCurrent = (list, value) => (value && !list.includes(value) ? [value, ...list] : list)
 
-function Modal({ init, canRepeat, categories, methods, onSave, onClose, onMakeFixed }) {
+function Modal({ init, canRepeat, categories, methods, cards, onSave, onClose }) {
   useEsc(onClose)
   const [f, setF] = useState({
     n: '1', amountMode: 'total', repeat: false, until: '',
     ...init,
+    ...(init.id ? { fixed: Boolean(init.recurrence_id) } : {}),
     newTotal: init.installment_total ? String(init.installment_total) : '',
     description: init.group_id ? stripInstallmentSuffix(init.description) : init.description,
     amount: init.amount === '' ? '' : String(init.amount).replace('.', ','),
@@ -716,15 +815,30 @@ function Modal({ init, canRepeat, categories, methods, onSave, onClose, onMakeFi
   const amt = parseAmount(f.amount)
   const parts = n > 1 ? (f.amountMode === 'total' ? splitCents(amt, n) : Array(n).fill(round2(amt))) : []
   const partsTotal = parts.reduce((s, v) => s + v, 0)
+  // "Planejado" automático: no cartão, 1ª parcela vencendo depois da fatura aberta.
+  const card = (cards || []).find((c) => c.method === f.method)
+  const billDue = card ? openBillDue(card, today()) : null
+  const auto = f.id && f.method === init.method && f.date === init.date ? Boolean(init.planned_auto)
+    : Boolean(card && f.type === 'expense' && f.status === 'pending' && monthOf(f.date) > monthOf(billDue))
+  const planned = f.planned_set ?? auto
 
   return (
     <div className="overlay" onClick={onClose}>
       <form className="card modal" onClick={(e) => e.stopPropagation()} onSubmit={(e) => { e.preventDefault(); onSave(f) }}>
         <h3>{f.id ? 'Editar' : 'Novo'} lançamento</h3>
         {f.group_id && <p className="hint"><span className="badge">{f.installment_number}/{f.installment_total}</span> Parcela de um parcelamento</p>}
-        {f.recurrence_id && <p className="hint"><span className="badge fix"><Repeat size={11} /> Fixo</span> Lançamento de um gasto fixo</p>}
-        {f.id && !f.group_id && !f.recurrence_id && canRepeat && (
-          <button type="button" className="link hint-link" onClick={onMakeFixed}><Repeat size={14} /> Tornar fixo (repetir nos outros meses)…</button>
+        {f.id && !f.group_id && canRepeat && (
+          <>
+            <label className="check">
+              <input type="checkbox" checked={Boolean(f.fixed)} onChange={(e) => setF({ ...f, fixed: e.target.checked })} />
+              <span className="badge fix"><Repeat size={11} /> Fixo</span> Repetir todo mês
+            </label>
+            {Boolean(f.fixed) !== Boolean(init.recurrence_id) && (
+              <p className="hint">{f.fixed
+                ? 'Ao salvar, você escolhe até quando repetir; os iguais dos meses seguintes são vinculados.'
+                : 'Ao salvar, para de repetir depois deste mês e os pendentes dos meses seguintes são apagados (dá para desfazer).'}</p>
+            )}
+          </>
         )}
         <label>Tipo
           <select value={f.type} onChange={set('type')}><option value="expense">Despesa</option><option value="income">Receita</option></select>
@@ -796,6 +910,15 @@ function Modal({ init, canRepeat, categories, methods, onSave, onClose, onMakeFi
           </div>
         )}
 
+        <label className="check"><input type="checkbox" checked={planned} onChange={(e) => setF({ ...f, planned_set: e.target.checked })} /> Só planejamento (ainda não confirmado)</label>
+        {(planned || f.planned_set != null) && (
+          <p className="hint">
+            {f.planned_set == null
+              ? `Marcado automaticamente: no ${f.method} vence só depois da fatura aberta (${fmtDay(billDue)}). Desmarque se o gasto já é certo.`
+              : planned ? 'Entra no saldo previsto, mas o Planejador entende que pode mudar de mês, de valor ou ser cancelado.' : 'Marcado por você como gasto certo.'}
+            {f.planned_set != null && card && <button type="button" className="link" onClick={() => setF({ ...f, planned_set: null })}>Deixar o app decidir</button>}
+          </p>
+        )}
         <label className="check"><input type="checkbox" checked={f.status === 'paid'} onChange={(e) => setF({ ...f, status: e.target.checked ? 'paid' : 'pending' })} /> Já {f.type === 'income' ? 'recebido' : 'pago'}{isNew && (n > 1 || f.repeat) ? ' (só o primeiro)' : ''}</label>
         <div className="row end">
           <button type="button" className="btn" onClick={onClose}>Cancelar</button>
@@ -823,7 +946,7 @@ function ThemeButton() {
   )
 }
 
-function SettingsPanel({ settings, onSaveBalance, options, onAddOption, onRemoveOption, onClose }) {
+function SettingsPanel({ settings, onSaveBalance, options, methods, cards, onSaveCard, onRemoveCard, onAddOption, onRemoveOption, onClose }) {
   useEsc(onClose)
   const [theme, setTheme] = useTheme()
   const [s, setS] = useState({ opening_balance: String(settings.opening_balance).replace('.', ','), opening_date: settings.opening_date })
@@ -864,8 +987,56 @@ function SettingsPanel({ settings, onSaveBalance, options, onAddOption, onRemove
 
         <OptionList title="Categorias" kind="category" defaults={CATEGORIES} options={options} onAdd={onAddOption} onRemove={onRemoveOption} />
         <OptionList title="Formas de pagamento" kind="method" defaults={METHODS} options={options} onAdd={onAddOption} onRemove={onRemoveOption} />
+        <CardList methods={methods} cards={cards} onSave={onSaveCard} onRemove={onRemoveCard} />
       </div>
     </div>
+  )
+}
+
+// Fechamento/vencimento por cartão: usados no "planejado" automático e pelo Planejador.
+function CardList({ methods, cards, onSave, onRemove }) {
+  const names = methods.filter((m) => norm(m).includes('cartao'))
+  const saved = new Map((cards || []).map((c) => [c.method, c]))
+  const [edit, setEdit] = useState({}) // method → campos em edição
+  const val = (m) => edit[m] || {
+    closing_day: saved.get(m)?.closing_day ?? '', due_day: saved.get(m)?.due_day ?? '',
+    credit_limit: saved.get(m)?.credit_limit == null ? '' : String(saved.get(m).credit_limit).replace('.', ','),
+  }
+  const set = (m, k) => (e) => setEdit({ ...edit, [m]: { ...val(m), [k]: e.target.value } })
+  const submit = async (e, m) => {
+    e.preventDefault()
+    await onSave({ method: m, ...val(m) })
+    setEdit(({ [m]: _, ...rest }) => rest)
+  }
+  return (
+    <section>
+      <h4>Cartões de crédito</h4>
+      {cards === null ? (
+        <p className="hint">Para configurar os cartões, rode <code>supabase/migration-006.sql</code> no SQL Editor do Supabase.</p>
+      ) : (
+        <>
+          <p className="hint">Com o dia de fechamento e de vencimento, compras cuja 1ª parcela vence depois da fatura aberta viram planejadas automaticamente, e o Planejador consegue indicar qual cartão usar. Aparecem aqui as formas com "Cartão" no nome.</p>
+          <ul className="cards-cfg">
+            {names.map((m) => {
+              const v = val(m)
+              const has = saved.has(m)
+              return (
+                <li key={m}>
+                  <form className="row wrap" onSubmit={(e) => submit(e, m)}>
+                    <b className="cc-name">{m}</b>
+                    <label className="inline">Fecha dia<input type="number" min="1" max="31" value={v.closing_day} onChange={set(m, 'closing_day')} required /></label>
+                    <label className="inline">Vence dia<input type="number" min="1" max="31" value={v.due_day} onChange={set(m, 'due_day')} required /></label>
+                    <label className="inline">Limite (opcional)<input inputMode="decimal" value={v.credit_limit} onChange={set(m, 'credit_limit')} /></label>
+                    <button className="btn sm primary" disabled={has && !edit[m]}>{has && !edit[m] ? <><Check size={14} /> Salvo</> : 'Salvar'}</button>
+                    {has && <button type="button" className="btn sm" onClick={() => onRemove(m)}>Remover</button>}
+                  </form>
+                </li>
+              )
+            })}
+          </ul>
+        </>
+      )}
+    </section>
   )
 }
 

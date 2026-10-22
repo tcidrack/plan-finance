@@ -21,6 +21,12 @@ describe('summarize', () => {
     const rows = [tx('2026-10-20', 'income', 50), tx('2026-11-05', 'expense', 20)]
     expect(summarize(rows, settings, '2026-11').carry).toBe(150)
   })
+  it('planejados contam no saldo e aparecem separados', () => {
+    const rows = [tx('2026-11-01', 'income', 1000), tx('2026-11-10', 'expense', 200), tx('2026-11-20', 'expense', 300, { planned: true })]
+    const s = summarize(rows, settings, '2026-11')
+    expect(s.planned).toBe(300)
+    expect(s.projected).toBe(600)
+  })
 })
 
 it('nextMonth vira o ano', () => expect(nextMonth('2026-12')).toBe('2027-01'))

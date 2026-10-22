@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   splitCents, addMonths, monthAdd, monthRange, buildInstallments, parseInstallment, stripInstallmentSuffix,
   missingRecurring, recurrenceMonths, dueSoon, planConversion, looseToInstallments, looseToRecurring,
-  fixedFromRow, visibleMonths, resizeInstallments, dueLevel,
+  fixedFromRow, visibleMonths, resizeInstallments, dueLevel, openBillDue, withPlanned, sameLater, repeatSet, editChanges, applyRepeat,
 } from './plan.js'
 import { linkInstallments } from './plan.js'
 import { SAMPLE } from './fixtures.test-data.js'
@@ -240,5 +240,99 @@ describe('conversão das parcelas lançadas à mão', () => {
     expect(fones).toHaveLength(6)
     expect(new Set(fones.map((r) => r.group_id)).size).toBe(1)
     expect(fones.map((r) => r.installment_number).sort()).toEqual([1, 2, 3, 4, 5, 6])
+  })
+})
+
+describe('cartões e planejados automáticos', () => {
+  const nubank = { method: 'Cartão Nubank', closing_day: 3, due_day: 10 }
+  const card = (date, extra = {}) => ({ id: id(), date, type: 'expense', amount: 100, status: 'pending', method: 'Cartão Nubank', description: 'x', ...extra })
+
+  it('openBillDue: antes e depois do fechamento', () => {
+    expect(openBillDue(nubank, '2026-10-02')).toBe('2026-10-10')
+    expect(openBillDue(nubank, '2026-10-03')).toBe('2026-11-10')
+    expect(openBillDue(nubank, '2026-10-22')).toBe('2026-11-10')
+  })
+  it('openBillDue: vencimento depois do fechamento no mesmo mês e dia 31', () => {
+    expect(openBillDue({ closing_day: 5, due_day: 15 }, '2026-10-01')).toBe('2026-10-15')
+    expect(openBillDue({ closing_day: 25, due_day: 31 }, '2027-01-28')).toBe('2027-02-28')
+  })
+
+  it('compra que só vence depois da fatura aberta vira planejada', () => {
+    const rows = [
+      card('2027-01-10', { group_id: 'rev', installment_number: 1 }), card('2027-02-10', { group_id: 'rev', installment_number: 2 }),
+      card('2026-11-10'),
+    ]
+    const out = withPlanned(rows, [nubank], '2026-10-22')
+    expect(out.map((r) => r.planned)).toEqual([true, true, false])
+    expect(out[0].planned_auto).toBe(true)
+  })
+  it('parcelamento já começado, parcela paga, Pix e escolha do usuário', () => {
+    const rows = [
+      card('2026-11-10', { group_id: 'a' }), card('2027-01-10', { group_id: 'a' }),
+      card('2026-12-10', { group_id: 'b', status: 'paid' }), card('2027-01-10', { group_id: 'b' }),
+      card('2027-03-10', { method: 'Pix' }),
+      card('2027-03-10', { planned: false }),
+      card('2026-11-10', { planned: true }),
+    ]
+    const out = withPlanned(rows, [nubank], '2026-10-22')
+    expect(out.map((r) => r.planned)).toEqual([false, false, false, false, false, false, true])
+    expect(out[5]).toMatchObject({ planned_auto: true, planned_set: false })
+    expect(out[0].planned_set).toBe(null)
+  })
+})
+
+describe('sameLater', () => {
+  const r = (date, extra = {}) => ({ id: id(), date, type: 'expense', amount: 300, category: 'Cartão', method: 'Boleto', description: 'Fatura mercado livre', ...extra })
+  it('acha os iguais soltos dos meses seguintes, mesmo com outra categoria', () => {
+    const row = r('2026-10-15')
+    const later = [r('2026-11-15', { amount: 250 }), r('2026-12-15', { description: 'Fatura Mercado Livre ', category: 'Outros' })]
+    const rows = [
+      row, ...later,
+      r('2026-09-15'), // mês anterior
+      r('2026-10-20'), // mesmo mês
+      r('2027-01-15', { group_id: 'g' }), // vinculado
+      r('2027-01-15', { type: 'income' }),
+      r('2027-01-15', { description: 'Fatura Nubank' }),
+    ]
+    expect(sameLater(row, rows)).toEqual(later)
+  })
+})
+
+describe('repetir edição nos outros meses', () => {
+  const r = (date, extra = {}) => ({ id: id(), date, type: 'expense', amount: 100, category: 'Moto', method: 'Pix', notes: '', description: 'Gasolina', status: 'pending', ...extra })
+  const pay = (row, extra = {}) => ({
+    date: row.date, description: row.group_id ? stripInstallmentSuffix(row.description) : row.description, category: row.category,
+    type: row.type, amount: row.amount, status: row.status, method: row.method, notes: row.notes, ...extra,
+  })
+
+  it('editChanges: só o que mudou, sem contar mudança só de mês nem sufixo de parcela', () => {
+    const row = r('2026-10-10', { description: 'Capacetes – 2/6', group_id: 'g' })
+    expect(editChanges(row, pay(row, { notes: 'azul' }))).toEqual([{ field: 'notes', from: '', to: 'azul' }])
+    expect(editChanges(row, pay(row, { date: '2026-11-10' }))).toEqual([])
+    expect(editChanges(row, pay(row, { date: '2026-10-15', planned: true }))).toEqual([
+      { field: 'planned', from: null, to: true }, { field: 'day', from: 10, to: 15 },
+    ])
+  })
+
+  it('repeatSet: parcelas, fixo e soltos iguais de outros meses', () => {
+    const g1 = r('2026-10-10', { group_id: 'g' }), g2 = r('2026-11-10', { group_id: 'g' })
+    const f1 = r('2026-10-05', { recurrence_id: 'f' }), f2 = r('2026-11-05', { recurrence_id: 'f' })
+    const s0 = r('2026-09-20'), s1 = r('2026-10-20'), s2 = r('2026-11-20', { description: 'GASOLINA' })
+    const sameMonth = r('2026-10-28'), income = r('2026-12-20', { type: 'income' })
+    const rows = [g1, g2, f1, f2, s0, s1, s2, sameMonth, income]
+    expect(repeatSet(g1, rows)).toEqual([g2])
+    expect(repeatSet(f2, rows)).toEqual([f1])
+    expect(repeatSet(s1, rows)).toEqual([s0, s2])
+  })
+
+  it('applyRepeat: leva só os campos alterados, valor só onde era igual e dia no próprio mês', () => {
+    const orig = r('2027-01-31', { description: 'Capacetes – 1/3', group_id: 'g', installment_number: 1, installment_total: 3, notes: 'a' })
+    const t1 = r('2027-02-28', { description: 'Capacetes – 2/3', group_id: 'g', installment_number: 2, installment_total: 3, notes: 'b', category: 'Outros' })
+    const t2 = r('2027-03-31', { description: 'Capacetes – 3/3', group_id: 'g', installment_number: 3, installment_total: 3, amount: 100.02 })
+    const payload = pay(orig, { description: 'Capacete', amount: 120, method: 'Cartão Nubank', date: '2027-01-30' })
+    const out = applyRepeat(orig, payload, editChanges(orig, payload), [t1, t2])
+    expect(out[0]).toMatchObject({ description: 'Capacete – 1/3', amount: 120, date: '2027-01-30', notes: 'a' })
+    expect(out[1]).toMatchObject({ description: 'Capacete – 2/3', amount: 120, method: 'Cartão Nubank', date: '2027-02-28', notes: 'b', category: 'Outros' })
+    expect(out[2]).toMatchObject({ description: 'Capacete – 3/3', amount: 100.02, method: 'Cartão Nubank', date: '2027-03-30' })
   })
 })
