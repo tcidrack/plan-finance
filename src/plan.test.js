@@ -252,6 +252,12 @@ describe('cartões e planejados automáticos', () => {
     expect(openBillDue(nubank, '2026-10-03')).toBe('2026-11-10')
     expect(openBillDue(nubank, '2026-10-22')).toBe('2026-11-10')
   })
+  it('openBillDue: fecha dia 26 e vence dia 3 do mês seguinte (Itaú)', () => {
+    const itau = { closing_day: 26, due_day: 3 }
+    expect(openBillDue(itau, '2026-10-23')).toBe('2026-11-03')
+    expect(openBillDue(itau, '2026-10-26')).toBe('2026-12-03')
+    expect(openBillDue(itau, '2026-12-28')).toBe('2027-02-03')
+  })
   it('openBillDue: vencimento depois do fechamento no mesmo mês e dia 31', () => {
     expect(openBillDue({ closing_day: 5, due_day: 15 }, '2026-10-01')).toBe('2026-10-15')
     expect(openBillDue({ closing_day: 25, due_day: 31 }, '2027-01-28')).toBe('2027-02-28')

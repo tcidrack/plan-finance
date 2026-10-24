@@ -110,3 +110,6 @@ alter table public.cards enable row level security;
 drop policy if exists "cards_own" on public.cards;
 create policy "cards_own" on public.cards
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- ═════════ Opções padrão escondidas (mesmo conteúdo de migration-007.sql) ═════════
+alter table public.user_options add column if not exists hidden boolean not null default false;

@@ -190,7 +190,11 @@ pre { background: var(--bg); padding: 10px; border-radius: 8px; overflow-x: auto
 @media (pointer: coarse) { .chip-toggle { min-height: 28px; padding: 4px 10px; } }
 .cards-cfg { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 10px; }
 .cards-cfg .row { align-items: flex-end; }
-.cards-cfg .cc-name { flex: 1 1 100%; }
+.cards-cfg .cc-name { flex: 1 1 100%; display: flex; align-items: center; gap: 6px; }
+.cards-cfg li > .hint { margin-top: 4px; }
+.cards-add { margin-top: 10px; align-items: flex-end; }
+.cards-add label.inline { flex: 0 1 120px; }
+.cards-add label.cc-new { flex: 1 1 200px; }
 .cards-cfg label.inline { flex: 0 1 120px; }
 .hint { font-size: .78rem; color: var(--muted); margin: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .hint .badge { margin-left: 0; }

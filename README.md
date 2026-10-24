@@ -15,6 +15,7 @@ Rode no **SQL Editor**, nesta ordem, as migrações que ainda não rodou (todas 
 3. `supabase/migration-004.sql`: categorias e formas de pagamento personalizadas.
 4. `supabase/migration-005.sql`: lançamentos planejados.
 5. `supabase/migration-006.sql`: cartões (fechamento/vencimento) e planejado automático.
+6. `supabase/migration-007.sql`: remover categorias e formas de pagamento padrão.
 
 Depois faça o deploy da versão nova (push no GitHub; a Vercel publica sozinha). Enquanto uma migração não roda, o app continua funcionando e mostra um aviso.
 

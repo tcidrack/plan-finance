@@ -6,7 +6,7 @@ import { CATEGORIES, METHODS } from './constants.js'
 import { brl, monthOf, monthLabel, monthShort, nextMonth, fmtDay, summarize } from './calc.js'
 import {
   buildInstallments, stripInstallmentSuffix, splitCents, recurrenceMonths, recurrenceRow,
-  missingRecurring, monthAdd, dueSoon, openBillDue, withPlanned, repeatSet, editChanges, applyRepeat, dueLevel, planConversion, looseToInstallments, looseToRecurring, fixedFromRow, resizeInstallments, round2,
+  missingRecurring, monthAdd, dateInMonth, addMonths, dueSoon, openBillDue, withPlanned, repeatSet, editChanges, applyRepeat, dueLevel, planConversion, looseToInstallments, looseToRecurring, fixedFromRow, resizeInstallments, round2,
 } from './plan.js'
 import { ConfirmDialog, Toast, MonthPicker, FixosPanel, ConvertModal, MakeFixedDialog, useEsc } from './dialogs.jsx'
 import { MonthTabs } from './tabs.jsx'
@@ -47,6 +47,7 @@ const readMonth = (uid) => {
 // Erro do Supabase vira exceção, para as operações em várias etapas.
 const q = async (p) => {
   const { data, error } = await p
+  if (error && /hidden/.test(error.message || '')) throw new Error('Rode supabase/migration-007.sql no Supabase para poder remover as opções padrão.')
   if (error && /planned|cards/.test(error.message || '')) throw new Error('Rode supabase/migration-005.sql e depois migration-006.sql no Supabase para ativar planejados e cartões.')
   if (error) throw error
   return data
@@ -420,23 +421,46 @@ function Main({ session }) {
     opening_date: s.opening_date,
   })))
 
-  // Categorias e formas de pagamento: as padrão + as criadas pelo usuário.
-  const custom = (kind) => (options || []).filter((x) => x.kind === kind)
-  const categories = [...CATEGORIES, ...custom('category').map((x) => x.name)]
-  const methods = [...METHODS, ...custom('method').map((x) => x.name)]
+  // Categorias e formas de pagamento: as padrão (menos as que o usuário removeu) + as criadas por ele.
+  // Remover uma padrão grava uma linha `hidden`; adicionar o mesmo nome de novo apaga essa linha.
+  const custom = (kind) => (options || []).filter((x) => x.kind === kind && !x.hidden)
+  const hiddenOpt = (kind, name) => (options || []).find((x) => x.kind === kind && x.hidden && norm(x.name) === norm(name))
+  const listOf = (kind, defaults) => [...defaults.filter((d) => !hiddenOpt(kind, d)), ...custom(kind).map((x) => x.name)]
+  const categories = listOf('category', CATEGORIES)
+  const methods = listOf('method', METHODS)
+  const insertOption = async (kind, name) => {
+    const hidden = hiddenOpt(kind, name)
+    if (hidden) await q(supabase.from('user_options').delete().eq('id', hidden.id))
+    else await q(supabase.from('user_options').insert({ kind, name }))
+  }
   const addOption = (kind, name) => {
     const list = kind === 'category' ? categories : methods
     if (list.some((x) => norm(x) === norm(name))) return setError(`"${name}" já existe na lista.`)
-    return exec(() => q(supabase.from('user_options').insert({ kind, name })))
+    return exec(() => insertOption(kind, name))
   }
-  const removeOption = (opt) => exec(() => q(supabase.from('user_options').delete().eq('id', opt.id)))
+  const removeOption = (kind, name) => exec(async () => {
+    const mine = custom(kind).find((x) => x.name === name)
+    if (mine) await q(supabase.from('user_options').delete().eq('id', mine.id))
+    else await q(supabase.from('user_options').insert({ kind, name, hidden: true }))
+  })
 
   // Cartões de crédito: fechamento e vencimento de cada forma de pagamento "Cartão …".
-  const saveCard = (c) => exec(() => q(supabase.from('cards').upsert({
+  const saveCardRow = (c) => q(supabase.from('cards').upsert({
     user_id: uid, method: c.method, closing_day: Number(c.closing_day), due_day: Number(c.due_day),
     credit_limit: String(c.credit_limit ?? '').trim() ? round2(parseAmount(c.credit_limit)) : null,
-  }, { onConflict: 'user_id,method' })))
+  }, { onConflict: 'user_id,method' }))
+  const saveCard = (c) => exec(() => saveCardRow(c))
   const removeCard = (method) => exec(() => q(supabase.from('cards').delete().eq('method', method)))
+  // Cartão novo: se o nome ainda não é forma de pagamento, cria (ou restaura) a forma também.
+  const addCard = (c) => {
+    const method = c.method.trim().replace(/\s+/g, ' ')
+    if ((cards || []).some((x) => norm(x.method) === norm(method))) return setError(`O cartão "${method}" já está configurado.`)
+    const existing = methods.find((m) => norm(m) === norm(method))
+    return exec(async () => {
+      if (!existing) await insertOption('method', method)
+      await saveCardRow({ ...c, method: existing || method })
+    })
+  }
 
   // ───────── Meses ─────────
   const ensureMonth = (m) => {
@@ -684,7 +708,7 @@ function Main({ session }) {
       {fixing && <MakeFixedDialog row={fixing} rows={rows} onConfirm={(until) => makeFixed(fixing, until)} onClose={() => setFixing(null)} />}
       {showSettings && (
         <SettingsPanel settings={settings} onSaveBalance={saveSettings} options={options}
-          methods={methods} cards={cards} onSaveCard={saveCard} onRemoveCard={removeCard}
+          categories={categories} methods={methods} cards={cards} onSaveCard={saveCard} onAddCard={addCard} onRemoveCard={removeCard}
           onAddOption={addOption} onRemoveOption={removeOption} onClose={() => setShowSettings(false)} />
       )}
       {picker && <MonthPicker initial={nextMonth(months[months.length - 1] || curMonth)} onPick={ensureMonth} onClose={() => setPicker(false)} />}
@@ -946,7 +970,7 @@ function ThemeButton() {
   )
 }
 
-function SettingsPanel({ settings, onSaveBalance, options, methods, cards, onSaveCard, onRemoveCard, onAddOption, onRemoveOption, onClose }) {
+function SettingsPanel({ settings, onSaveBalance, options, categories, methods, cards, onSaveCard, onAddCard, onRemoveCard, onAddOption, onRemoveOption, onClose }) {
   useEsc(onClose)
   const [theme, setTheme] = useTheme()
   const [s, setS] = useState({ opening_balance: String(settings.opening_balance).replace('.', ','), opening_date: settings.opening_date })
@@ -985,29 +1009,48 @@ function SettingsPanel({ settings, onSaveBalance, options, methods, cards, onSav
           </div>
         </section>
 
-        <OptionList title="Categorias" kind="category" defaults={CATEGORIES} options={options} onAdd={onAddOption} onRemove={onRemoveOption} />
-        <OptionList title="Formas de pagamento" kind="method" defaults={METHODS} options={options} onAdd={onAddOption} onRemove={onRemoveOption} />
-        <CardList methods={methods} cards={cards} onSave={onSaveCard} onRemove={onRemoveCard} />
+        <OptionList title="Categorias" kind="category" items={categories} options={options} onAdd={onAddOption} onRemove={onRemoveOption} />
+        <OptionList title="Formas de pagamento" kind="method" items={methods} options={options} onAdd={onAddOption} onRemove={onRemoveOption} />
+        <CardList methods={methods} cards={cards} onSave={onSaveCard} onAdd={onAddCard} onRemove={onRemoveCard} />
       </div>
     </div>
   )
 }
 
-// Fechamento/vencimento por cartão: usados no "planejado" automático e pelo Planejador.
-function CardList({ methods, cards, onSave, onRemove }) {
-  const names = methods.filter((m) => norm(m).includes('cartao'))
-  const saved = new Map((cards || []).map((c) => [c.method, c]))
+const BLANK_CARD = { method: '', closing_day: '', due_day: '', credit_limit: '' }
+const limitText = (c) => (c.credit_limit == null ? '' : String(c.credit_limit).replace('.', ','))
+
+// Mostra a regra do cartão com datas reais: "Compras até 25/10 vencem em 03/11; a partir de 26/10, em 03/12."
+function billRule(c) {
+  const close = Number(c.closing_day), due = Number(c.due_day)
+  if (!(close >= 1 && close <= 31 && due >= 1 && due <= 31)) return ''
+  const first = openBillDue({ closing_day: close, due_day: due }, today())
+  const closeDate = dateInMonth(monthAdd(monthOf(first), due <= close ? -1 : 0), close)
+  const dayBefore = new Date(Date.parse(closeDate) - 864e5).toISOString().slice(0, 10)
+  return `Compras até ${fmtDay(dayBefore)} vencem em ${fmtDay(first)}; a partir de ${fmtDay(closeDate)}, em ${fmtDay(addMonths(first, 1))}.`
+}
+
+// Cartões: fechamento/vencimento usados no "planejado" automático e pelo Planejador.
+function CardList({ methods, cards, onSave, onAdd, onRemove }) {
   const [edit, setEdit] = useState({}) // method → campos em edição
-  const val = (m) => edit[m] || {
-    closing_day: saved.get(m)?.closing_day ?? '', due_day: saved.get(m)?.due_day ?? '',
-    credit_limit: saved.get(m)?.credit_limit == null ? '' : String(saved.get(m).credit_limit).replace('.', ','),
-  }
-  const set = (m, k) => (e) => setEdit({ ...edit, [m]: { ...val(m), [k]: e.target.value } })
-  const submit = async (e, m) => {
+  const [novo, setNovo] = useState(BLANK_CARD)
+  const configured = new Set((cards || []).map((c) => norm(c.method)))
+  const suggestions = methods.filter((m) => norm(m).includes('cartao') && !configured.has(norm(m)))
+  const val = (c) => edit[c.method] || { closing_day: c.closing_day, due_day: c.due_day, credit_limit: limitText(c) }
+  const set = (c, k) => (e) => setEdit({ ...edit, [c.method]: { ...val(c), [k]: e.target.value } })
+  const setN = (k) => (e) => setNovo({ ...novo, [k]: e.target.value })
+  const save = async (e, c) => {
     e.preventDefault()
-    await onSave({ method: m, ...val(m) })
-    setEdit(({ [m]: _, ...rest }) => rest)
+    await onSave({ method: c.method, ...val(c) })
+    setEdit(({ [c.method]: _, ...rest }) => rest)
   }
+  const add = async (e) => {
+    e.preventDefault()
+    if (!novo.method.trim()) return
+    await onAdd(novo)
+    setNovo(BLANK_CARD)
+  }
+
   return (
     <section>
       <h4>Cartões de crédito</h4>
@@ -1015,35 +1058,49 @@ function CardList({ methods, cards, onSave, onRemove }) {
         <p className="hint">Para configurar os cartões, rode <code>supabase/migration-006.sql</code> no SQL Editor do Supabase.</p>
       ) : (
         <>
-          <p className="hint">Com o dia de fechamento e de vencimento, compras cuja 1ª parcela vence depois da fatura aberta viram planejadas automaticamente, e o Planejador consegue indicar qual cartão usar. Aparecem aqui as formas com "Cartão" no nome.</p>
+          <p className="hint">Com o fechamento e o vencimento, compras cuja 1ª parcela vence depois da fatura aberta viram planejadas automaticamente, e o Planejador indica qual cartão usar.</p>
           <ul className="cards-cfg">
-            {names.map((m) => {
-              const v = val(m)
-              const has = saved.has(m)
+            {cards.map((c) => {
+              const v = val(c)
+              const dirty = Boolean(edit[c.method])
               return (
-                <li key={m}>
-                  <form className="row wrap" onSubmit={(e) => submit(e, m)}>
-                    <b className="cc-name">{m}</b>
-                    <label className="inline">Fecha dia<input type="number" min="1" max="31" value={v.closing_day} onChange={set(m, 'closing_day')} required /></label>
-                    <label className="inline">Vence dia<input type="number" min="1" max="31" value={v.due_day} onChange={set(m, 'due_day')} required /></label>
-                    <label className="inline">Limite (opcional)<input inputMode="decimal" value={v.credit_limit} onChange={set(m, 'credit_limit')} /></label>
-                    <button className="btn sm primary" disabled={has && !edit[m]}>{has && !edit[m] ? <><Check size={14} /> Salvo</> : 'Salvar'}</button>
-                    {has && <button type="button" className="btn sm" onClick={() => onRemove(m)}>Remover</button>}
+                <li key={c.method}>
+                  <form className="row wrap" onSubmit={(e) => save(e, c)}>
+                    <span className="cc-name"><b>{c.method}</b>
+                      <button type="button" className="icon danger" onClick={() => onRemove(c.method)}
+                        title="Remover cartão (a forma de pagamento continua)" aria-label={`Remover ${c.method}`}><X size={14} /></button>
+                    </span>
+                    <label className="inline">Fecha dia<input type="number" min="1" max="31" value={v.closing_day} onChange={set(c, 'closing_day')} required /></label>
+                    <label className="inline">Vence dia<input type="number" min="1" max="31" value={v.due_day} onChange={set(c, 'due_day')} required /></label>
+                    <label className="inline">Limite (opcional)<input inputMode="decimal" value={v.credit_limit} onChange={set(c, 'credit_limit')} /></label>
+                    <button className="btn sm primary" disabled={!dirty}>{dirty ? 'Salvar' : <><Check size={14} /> Salvo</>}</button>
                   </form>
+                  <p className="hint">{billRule(v)}</p>
                 </li>
               )
             })}
+            {cards.length === 0 && <li className="muted">Nenhum cartão ainda.</li>}
           </ul>
+          <form className="row wrap cards-add" onSubmit={add}>
+            <label className="inline cc-new">Novo cartão
+              <input list="card-suggestions" value={novo.method} maxLength={40} onChange={setN('method')} placeholder="Ex.: Cartão Inter" required />
+            </label>
+            <datalist id="card-suggestions">{suggestions.map((m) => <option key={m} value={m} />)}</datalist>
+            <label className="inline">Fecha dia<input type="number" min="1" max="31" value={novo.closing_day} onChange={setN('closing_day')} required /></label>
+            <label className="inline">Vence dia<input type="number" min="1" max="31" value={novo.due_day} onChange={setN('due_day')} required /></label>
+            <label className="inline">Limite (opcional)<input inputMode="decimal" value={novo.credit_limit} onChange={setN('credit_limit')} /></label>
+            <button className="btn"><Plus size={16} /> Adicionar</button>
+          </form>
+          {novo.method && <p className="hint">{billRule(novo)}</p>}
         </>
       )}
     </section>
   )
 }
 
-// Lista padrão (fixa) + itens do usuário (removíveis) + campo para adicionar.
-function OptionList({ title, kind, defaults, options, onAdd, onRemove }) {
+function OptionList({ title, kind, items, options, onAdd, onRemove }) {
   const [name, setName] = useState('')
-  const mine = (options || []).filter((x) => x.kind === kind)
+  const mine = new Set((options || []).filter((x) => x.kind === kind && !x.hidden).map((x) => x.name))
   const add = async (e) => {
     e.preventDefault()
     const v = name.trim().replace(/\s+/g, ' ')
@@ -1055,17 +1112,17 @@ function OptionList({ title, kind, defaults, options, onAdd, onRemove }) {
     <section>
       <h4>{title}</h4>
       {options === null ? (
-        <p className="hint">Para criar as suas, rode <code>supabase/migration-004.sql</code> no SQL Editor do Supabase.</p>
+        <p className="hint">Para editar a lista, rode <code>supabase/migration-004.sql</code> no SQL Editor do Supabase.</p>
       ) : (
         <>
           <div className="chips">
-            {mine.map((o) => (
-              <span key={o.id} className="opt-chip mine">{o.name}
-                <button onClick={() => onRemove(o)} aria-label={`Remover ${o.name}`} title="Remover (lançamentos que já usam continuam com o nome)"><X size={12} /></button>
+            {items.map((n) => (
+              <span key={n} className={`opt-chip${mine.has(n) ? ' mine' : ''}`}>{n}
+                <button onClick={() => onRemove(kind, n)} aria-label={`Remover ${n}`} title="Remover da lista (lançamentos que já usam continuam com o nome)"><X size={12} /></button>
               </span>
             ))}
-            {defaults.map((d) => <span key={d} className="opt-chip">{d}</span>)}
           </div>
+          <p className="hint">Remover só tira da lista; os lançamentos que já usam continuam com o nome.</p>
           <form className="row" onSubmit={add}>
             <input value={name} maxLength={40} onChange={(e) => setName(e.target.value)} placeholder={kind === 'category' ? 'Nova categoria (ex.: Pets)' : 'Nova forma (ex.: Cartão Inter)'} aria-label={`Nova ${kind === 'category' ? 'categoria' : 'forma de pagamento'}`} />
             <button className="btn" disabled={!name.trim()}><Plus size={16} /> Adicionar</button>
