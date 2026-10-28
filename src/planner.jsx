@@ -147,7 +147,7 @@ export function Planner({ uid }) {
                 <span>{state.remaining} de {state.limit} mensagens hoje</span>
                 {state.messages.length > 0 && <button className="link" onClick={() => setConfirmClear(true)}><Trash2 size={12} /> Limpar conversa</button>}
               </div>
-              <p className="planner-disclaimer">Dicas educativas, não é recomendação de investimento. Suas mensagens e um resumo dos seus lançamentos são enviados ao Google Gemini.</p>
+              <p className="planner-disclaimer">Dicas educativas, não é recomendação de investimento. Suas mensagens e um resumo dos seus dados financeiros são enviados ao Google (Gemini) para gerar as respostas.</p>
             </>
           )}
         </aside>

@@ -6,7 +6,7 @@ import { CATEGORIES, METHODS } from './constants.js'
 import { brl, monthOf, monthLabel, monthShort, nextMonth, fmtDay, summarize } from './calc.js'
 import {
   buildInstallments, stripInstallmentSuffix, splitCents, recurrenceMonths, recurrenceRow,
-  missingRecurring, monthAdd, dateInMonth, addMonths, dueSoon, openBillDue, withPlanned, repeatSet, editChanges, applyRepeat, dueLevel, planConversion, looseToInstallments, looseToRecurring, fixedFromRow, resizeInstallments, round2,
+  missingRecurring, monthAdd, dateInMonth, addMonths, addDays, dueSoon, openBillDue, withPlanned, repeatSet, editChanges, applyRepeat, dueLevel, planConversion, looseToInstallments, looseToRecurring, fixedFromRow, resizeInstallments, round2,
 } from './plan.js'
 import { ConfirmDialog, Toast, MonthPicker, FixosPanel, ConvertModal, MakeFixedDialog, useEsc } from './dialogs.jsx'
 import { MonthTabs } from './tabs.jsx'
@@ -1031,14 +1031,13 @@ function SettingsPanel({ settings, onSaveBalance, options, categories, methods, 
 const BLANK_CARD = { method: '', closing_day: '', due_day: '', credit_limit: '' }
 const limitText = (c) => (c.credit_limit == null ? '' : String(c.credit_limit).replace('.', ','))
 
-// Mostra a regra do cartão com datas reais: "Compras até 25/10 vencem em 03/11; a partir de 26/10, em 03/12."
+// Mostra a regra do cartão com datas reais: "Compras até 26/10 vencem em 03/11; a partir de 27/10, em 03/12."
 function billRule(c) {
   const close = Number(c.closing_day), due = Number(c.due_day)
   if (!(close >= 1 && close <= 31 && due >= 1 && due <= 31)) return ''
   const first = openBillDue({ closing_day: close, due_day: due }, today())
   const closeDate = dateInMonth(monthAdd(monthOf(first), due <= close ? -1 : 0), close)
-  const dayBefore = new Date(Date.parse(closeDate) - 864e5).toISOString().slice(0, 10)
-  return `Compras até ${fmtDay(dayBefore)} vencem em ${fmtDay(first)}; a partir de ${fmtDay(closeDate)}, em ${fmtDay(addMonths(first, 1))}.`
+  return `Compras até ${fmtDay(closeDate)} vencem em ${fmtDay(first)}; a partir de ${fmtDay(addDays(closeDate, 1))}, em ${fmtDay(addMonths(first, 1))}.`
 }
 
 // Cartões: fechamento/vencimento usados no "planejado" automático e pelo Planejador.

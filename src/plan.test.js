@@ -247,16 +247,29 @@ describe('cartões e planejados automáticos', () => {
   const nubank = { method: 'Cartão Nubank', closing_day: 3, due_day: 10 }
   const card = (date, extra = {}) => ({ id: id(), date, type: 'expense', amount: 100, status: 'pending', method: 'Cartão Nubank', description: 'x', ...extra })
 
-  it('openBillDue: antes e depois do fechamento', () => {
+  it('openBillDue: antes, no dia e depois do fechamento', () => {
     expect(openBillDue(nubank, '2026-10-02')).toBe('2026-10-10')
-    expect(openBillDue(nubank, '2026-10-03')).toBe('2026-11-10')
+    expect(openBillDue(nubank, '2026-10-03')).toBe('2026-10-10') // no dia do fechamento ainda entra
+    expect(openBillDue(nubank, '2026-10-04')).toBe('2026-11-10')
     expect(openBillDue(nubank, '2026-10-22')).toBe('2026-11-10')
   })
-  it('openBillDue: fecha dia 26 e vence dia 3 do mês seguinte (Itaú)', () => {
-    const itau = { closing_day: 26, due_day: 3 }
-    expect(openBillDue(itau, '2026-10-23')).toBe('2026-11-03')
-    expect(openBillDue(itau, '2026-10-26')).toBe('2026-12-03')
-    expect(openBillDue(itau, '2026-12-28')).toBe('2027-02-03')
+  it('openBillDue: Itaú fecha 26 e vence 02 do mês seguinte, inclusive na virada do ano', () => {
+    const itau = { closing_day: 26, due_day: 2 }
+    expect(openBillDue(itau, '2026-10-23')).toBe('2026-11-02')
+    expect(openBillDue(itau, '2026-10-26')).toBe('2026-11-02')
+    expect(openBillDue(itau, '2026-10-27')).toBe('2026-12-02')
+    expect(openBillDue(itau, '2026-12-26')).toBe('2027-01-02')
+    expect(openBillDue(itau, '2026-12-27')).toBe('2027-02-02')
+  })
+  it('openBillDue: PicPay fecha 19 e vence 25; Nubank fecha 04 e vence 11', () => {
+    const picpay = { closing_day: 19, due_day: 25 }
+    expect(openBillDue(picpay, '2026-10-19')).toBe('2026-10-25')
+    expect(openBillDue(picpay, '2026-10-20')).toBe('2026-11-25')
+    expect(openBillDue(picpay, '2026-12-20')).toBe('2027-01-25')
+    const nu = { closing_day: 4, due_day: 11 }
+    expect(openBillDue(nu, '2026-12-04')).toBe('2026-12-11')
+    expect(openBillDue(nu, '2026-12-05')).toBe('2027-01-11')
+    expect(openBillDue(nu, '2026-10-28')).toBe('2026-11-11')
   })
   it('openBillDue: vencimento depois do fechamento no mesmo mês e dia 31', () => {
     expect(openBillDue({ closing_day: 5, due_day: 15 }, '2026-10-01')).toBe('2026-10-15')

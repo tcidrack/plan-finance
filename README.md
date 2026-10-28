@@ -49,7 +49,7 @@ Crie sua conta na tela de login, informe o **Saldo inicial** e comece a adiciona
 Botão **Planejador** no canto da tela. Na aba **Meus objetivos** o usuário conta o que quer (reserva, investir, quitar dívidas, comprar algo, organizar gastos), a meta e o prazo; na **Conversa** pergunta o que quiser. A cada pergunta, o servidor monta um resumo dos dados do próprio usuário (saldos dos meses, gastos por categoria, fixos, parcelamentos em aberto, o que vence na semana; sem o Vale iFood no saldo) e envia junto ao Gemini.
 - Só aconselha: não cria nem altera lançamentos.
 - O histórico e os objetivos ficam salvos por usuário (Supabase, com RLS).
-- Limite de **5 mensagens por usuário por dia** (vira à meia-noite de Brasília), controlado no banco; mude `DAILY_LIMIT` em `api/planner.js`.
+- Limite de **10 mensagens por usuário por dia** (vira à meia-noite de Brasília), controlado no banco; mude `DAILY_LIMIT` em `api/planner.js`.
 - Para trocar de modelo ou de provedor de IA, só `api/planner.js` muda.
 
 ## Funções

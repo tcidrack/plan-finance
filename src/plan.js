@@ -141,7 +141,7 @@ export function dueSoon(rows, today, days = 7) {
 // ───────── Cartões e planejados ─────────
 // Vencimento da fatura em que cai uma compra feita hoje.
 export function openBillDue(card, today) {
-  const closeMonth = Number(today.slice(8, 10)) < card.closing_day ? monthOfDate(today) : monthAdd(monthOfDate(today), 1)
+  const closeMonth = Number(today.slice(8, 10)) <= card.closing_day ? monthOfDate(today) : monthAdd(monthOfDate(today), 1)
   const dueMonth = card.due_day <= card.closing_day ? monthAdd(closeMonth, 1) : closeMonth
   return dateInMonth(dueMonth, card.due_day)
 }
