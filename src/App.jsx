@@ -832,8 +832,18 @@ function Modal({ init, canRepeat, categories, methods, cards, onSave, onClose })
     newTotal: init.installment_total ? String(init.installment_total) : '',
     description: init.group_id ? stripInstallmentSuffix(init.description) : init.description,
     amount: init.amount === '' ? '' : String(init.amount).replace('.', ','),
+    buyDate: init.date, cardDue: false,
   })
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+  // Despesa no cartão: a data vira o vencimento da fatura em que cai a compra (buyDate).
+  const withCardDate = (g) => {
+    if (g.group_id) return g
+    const c = g.type === 'expense' && (cards || []).find((x) => x.method === g.method)
+    if (c) return { ...g, date: openBillDue(c, g.buyDate), cardDue: true }
+    return g.cardDue ? { ...g, date: g.buyDate, cardDue: false } : g
+  }
+  const setCardField = (k) => (e) => setF(withCardDate({ ...f, [k]: e.target.value }))
+  const setDate = (e) => setF({ ...f, date: e.target.value, buyDate: e.target.value, cardDue: false })
   const isNew = !f.id
   const n = Math.max(1, parseInt(f.n, 10) || 1)
   const amt = parseAmount(f.amount)
@@ -865,19 +875,20 @@ function Modal({ init, canRepeat, categories, methods, cards, onSave, onClose })
           </>
         )}
         <label>Tipo
-          <select value={f.type} onChange={set('type')}><option value="expense">Despesa</option><option value="income">Receita</option></select>
+          <select value={f.type} onChange={setCardField('type')}><option value="expense">Despesa</option><option value="income">Receita</option></select>
         </label>
         <label>Descrição<input value={f.description} onChange={set('description')} required autoFocus /></label>
         <div className="row">
           <label>{n > 1 && f.amountMode === 'parcela' ? 'Valor da parcela (R$)' : 'Valor (R$)'}<input inputMode="decimal" value={f.amount} onChange={set('amount')} required /></label>
-          <label>Data<input type="date" value={f.date} onChange={set('date')} required /></label>
+          <label>Data<input type="date" value={f.date} onChange={setDate} required /></label>
         </div>
+        {f.cardDue && <p className="hint">Compra em {fmtDay(f.buyDate)} no {f.method} → fatura vence em {fmtDay(f.date)}.</p>}
         <div className="row">
           <label>Categoria
             <select value={f.category} onChange={set('category')}>{withCurrent(categories, f.category).map((c) => <option key={c}>{c}</option>)}</select>
           </label>
           <label>Forma
-            <select value={f.method || ''} onChange={set('method')}><option value=""></option>{withCurrent(methods, f.method).map((c) => <option key={c}>{c}</option>)}</select>
+            <select value={f.method || ''} onChange={setCardField('method')}><option value=""></option>{withCurrent(methods, f.method).map((c) => <option key={c}>{c}</option>)}</select>
           </label>
         </div>
         <label>Observação<input value={f.notes || ''} onChange={set('notes')} /></label>
